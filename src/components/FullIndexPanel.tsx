@@ -106,7 +106,7 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                     <span className={`badge ${game.type === "Directory" ? "badge-dir" : "badge-iso"}`}>{game.type}</span>
                   </td>
                   <td>
-                    <span className="code-path" onClick={() => openGameFolder(game.full_path)} title={t("openInExplorer")}>{game.full_path}</span>
+                    <span className="code-path" onClick={() => copyPath(game.full_path, game.original_name)} title="Copy Path">{game.full_path}</span>
                   </td>
                   <td>
                     {game.is_exact_dup && <span className="badge badge-dup" style={{ marginRight: "0.35rem" }}>{t("tagExactDup")}</span>}
