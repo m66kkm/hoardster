@@ -106,7 +106,7 @@ h1 {
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
   border-radius: 16px;
-  padding: 1.5rem;
+  padding: 1.15rem 1.25rem;
   backdrop-filter: blur(12px);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
@@ -150,9 +150,9 @@ h1 {
 }
 
 .stat-value {
-  font-size: 2.75rem;
+  font-size: 2.25rem;
   font-weight: 700;
-  margin: 0.4rem 0;
+  margin: 0.2rem 0 0 0;
   font-family: 'Outfit', sans-serif;
   color: #fff;
 }
