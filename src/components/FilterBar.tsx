@@ -9,12 +9,15 @@ interface FilterBarProps {
   setDriveVal: (val: string) => void;
   typeVal: string;
   setTypeVal: (val: string) => void;
+  ratingVal: string;
+  setRatingVal: (val: string) => void;
   sortVal: string;
   setSortVal: (val: string) => void;
   viewMode: "tile" | "detail";
   setViewMode: (mode: "tile" | "detail") => void;
   scanPaths: string[];
   genres?: string[];
+  ratings?: string[];
 }
 
 export default function FilterBar({
@@ -25,12 +28,15 @@ export default function FilterBar({
   setDriveVal,
   typeVal,
   setTypeVal,
+  ratingVal,
+  setRatingVal,
   sortVal,
   setSortVal,
   viewMode,
   setViewMode,
   scanPaths,
-  genres
+  genres,
+  ratings
 }: FilterBarProps) {
   const { t } = useTranslation();
 
@@ -66,6 +72,16 @@ export default function FilterBar({
         <option value="">所有游戏类型</option>
         {genres && genres.map((g) => (
           <option key={g} value={g}>{g}</option>
+        ))}
+      </select>
+      <select
+        value={ratingVal}
+        onChange={(e) => setRatingVal(e.target.value)}
+        className="filter-select"
+      >
+        <option value="">所有评价热度</option>
+        {ratings && ratings.map((r) => (
+          <option key={r} value={r}>{r}</option>
         ))}
       </select>
       

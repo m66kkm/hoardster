@@ -30,6 +30,7 @@ export default function App() {
   const [searchVal, setSearchVal] = useState<string>("");
   const [driveVal, setDriveVal] = useState<string>("");
   const [typeVal, setTypeVal] = useState<string>("");
+  const [ratingVal, setRatingVal] = useState<string>("");
   const [sortVal, setSortVal] = useState<string>("");
 
   // Data states
@@ -48,9 +49,13 @@ export default function App() {
   const loggerRef = useRef<HTMLDivElement>(null);
 
   const [genres, setGenres] = useState<string[]>([]);
+  const [ratings, setRatings] = useState<string[]>([]);
 
   useEffect(() => {
     invoke<string[]>("get_all_genres_command").then(setGenres).catch(console.error);
+    invoke<{name: string, count: number}[]>("get_rating_stats_command")
+      .then(stats => setRatings(stats.map(s => s.name)))
+      .catch(console.error);
   }, []);
 
   const showToast = useCallback((msg: string) => {
@@ -60,7 +65,7 @@ export default function App() {
 
   // Custom hooks
   const { gamesList, exactDuplicates, versionDuplicates, franchises, loadGames, loadDuplicates, loadFranchises } = useGames({
-    searchVal, driveVal, typeVal, sortVal
+    searchVal, driveVal, typeVal, ratingVal, sortVal
   });
 
   const { scanPaths, loadScanPaths, addScanPath, removeScanPath, steamApiThreads, saveSteamApiThreads, language, saveLanguage } = useSettings();
@@ -112,7 +117,7 @@ export default function App() {
   useEffect(() => {
     setCurrentPage(1);
     loadTabData();
-  }, [activeTab, searchVal, driveVal, typeVal, sortVal, loadTabData]);
+  }, [activeTab, searchVal, driveVal, typeVal, ratingVal, sortVal, loadTabData]);
 
   // Scroll to bottom of logger
   useEffect(() => {
@@ -185,12 +190,15 @@ export default function App() {
         setDriveVal={setDriveVal}
         typeVal={typeVal}
         setTypeVal={setTypeVal}
+        ratingVal={ratingVal}
+        setRatingVal={setRatingVal}
         sortVal={sortVal}
         setSortVal={setSortVal}
         viewMode={viewMode}
         setViewMode={setViewMode}
         scanPaths={scanPaths}
         genres={genres}
+        ratings={ratings}
       />
 
       {/* Scrollable Tab Content Area */}
@@ -203,6 +211,10 @@ export default function App() {
               scanPaths={scanPaths} 
               onGenreClick={(genre) => {
                 setTypeVal(genre);
+                setActiveTab("posters");
+              }}
+              onRatingClick={(rating) => {
+                setRatingVal(rating);
                 setActiveTab("posters");
               }}
             />

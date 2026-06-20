@@ -7,11 +7,12 @@ import type { GenreStat, RatingStat } from "../types";
 interface DashboardProps {
   scanPaths: string[];
   onGenreClick?: (genre: string) => void;
+  onRatingClick?: (rating: string) => void;
 }
 
 const COLORS = ['#00f2fe', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#ec4899', '#6366f1', '#4facfe'];
 
-export default function Dashboard({ scanPaths, onGenreClick }: DashboardProps) {
+export default function Dashboard({ scanPaths, onGenreClick, onRatingClick }: DashboardProps) {
   const { t } = useTranslation();
   const [genreStats, setGenreStats] = useState<GenreStat[]>([]);
   const [ratingStats, setRatingStats] = useState<RatingStat[]>([]);
@@ -131,7 +132,17 @@ export default function Dashboard({ scanPaths, onGenreClick }: DashboardProps) {
                   }}
                   itemStyle={{ color: 'var(--success-color)' }}
                 />
-                <Bar dataKey="count" radius={[4, 4, 0, 0]} maxBarSize={50}>
+                <Bar 
+                  dataKey="count" 
+                  radius={[4, 4, 0, 0]} 
+                  maxBarSize={50}
+                  onClick={(data) => {
+                    if (onRatingClick && data && data.name) {
+                      onRatingClick(data.name);
+                    }
+                  }}
+                  style={{ cursor: onRatingClick ? "pointer" : "default" }}
+                >
                   {ratingStats.map((_entry, index) => (
                     <Cell key={`cell-${index}`} fill={index === 0 ? "var(--success-color)" : "rgba(16, 185, 129, 0.4)"} />
                   ))}

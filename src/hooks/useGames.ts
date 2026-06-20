@@ -6,10 +6,11 @@ interface UseGamesParams {
   searchVal: string;
   driveVal: string;
   typeVal: string;
+  ratingVal: string;
   sortVal: string;
 }
 
-export function useGames({ searchVal, driveVal, typeVal, sortVal }: UseGamesParams) {
+export function useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal }: UseGamesParams) {
   const [gamesList, setGamesList] = useState<Game[]>([]);
   const [exactDuplicates, setExactDuplicates] = useState<DuplicateGroup[]>([]);
   const [versionDuplicates, setVersionDuplicates] = useState<DuplicateGroup[]>([]);
@@ -22,6 +23,7 @@ export function useGames({ searchVal, driveVal, typeVal, sortVal }: UseGamesPara
         search: searchVal,
         drive: driveVal,
         type: typeVal,
+        rating: ratingVal,
         sort: sortVal,
         onlyRepresentatives,
         onlyInstalled
@@ -30,7 +32,7 @@ export function useGames({ searchVal, driveVal, typeVal, sortVal }: UseGamesPara
     } catch (e) {
       console.error("获取游戏列表失败:", e);
     }
-  }, [searchVal, driveVal, typeVal, sortVal]);
+  }, [searchVal, driveVal, typeVal, ratingVal, sortVal]);
 
   // Load duplicate groups
   const loadDuplicates = useCallback(async () => {

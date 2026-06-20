@@ -366,6 +366,7 @@ pub fn get_games_list(
     search: &str,
     drive: &str,
     r#type: &str,
+    rating: &str,
     sort: &str,
     only_representatives: bool,
     only_installed: bool,
@@ -385,7 +386,6 @@ pub fn get_games_list(
     }
 
     if only_installed {
-        // 已安装表示 source_path 以 D: 或 E: 开头
         query.push_str(" AND (g.source_path LIKE 'D:%' OR g.source_path LIKE 'E:%')");
     }
 
@@ -404,6 +404,12 @@ pub fn get_games_list(
         let param_index = params_vec.len() + 1;
         query.push_str(&format!(" AND s.genres LIKE ?{}", param_index));
         params_vec.push(Box::new(format!("%{}%", r#type)));
+    }
+
+    if !rating.is_empty() {
+        let param_index = params_vec.len() + 1;
+        query.push_str(&format!(" AND s.review_score_desc = ?{}", param_index));
+        params_vec.push(Box::new(rating.to_string()));
     }
 
     // 排序逻辑

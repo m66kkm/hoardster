@@ -38,13 +38,14 @@ fn get_games_stats_command(state: tauri::State<'_, db::DbState>) -> Result<db::S
 
 #[tauri::command]
 fn get_games_list_command(
-    state: tauri::State<'_, db::DbState>,
     search: String,
     drive: String,
     r#type: String,
+    rating: String,
     sort: String,
     only_representatives: bool,
     only_installed: bool,
+    state: tauri::State<'_, db::DbState>,
 ) -> Result<Vec<db::Game>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_games_list(
@@ -52,6 +53,7 @@ fn get_games_list_command(
         &search,
         &drive,
         &r#type,
+        &rating,
         &sort,
         only_representatives,
         only_installed,
