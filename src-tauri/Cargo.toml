@@ -1,6 +1,6 @@
 [package]
 name = "game-index"
-version = "1.0.0"
+version = "1.0.1"
 description = "Tauri local game index application"
 edition = "2021"
 
