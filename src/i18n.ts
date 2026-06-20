@@ -175,7 +175,7 @@ const resources = {
       "threads": "Threads",
 
       "headerTitle": "Game Index Console",
-      "headerSubtitle": "Localized game management platform based on Tauri 2 + SQLite 3",
+      "headerSubtitle": "A show-off space for gaming hoarders",
       "scanning": "Scanning...",
       "incScan": "Incremental Scan",
       "settingsBtn": "Settings",
