@@ -41,8 +41,8 @@ const resources = {
       "clearSteamCacheDesc": "清空现有数据库中的游戏信息，并在下次扫描时重新获取所有信息。",
       "threads": "线程",
       
-      "headerTitle": "游戏库索引控制台",
-      "headerSubtitle": "游戏仓鼠的炫耀空间",
+      "headerTitle": "Hoardster 控制台",
+      "headerSubtitle": "游戏仓鼠的终极武库",
       "scanning": "正在扫描...",
       "scraping": "正在更新...",
       "incScan": "增量盘库",
@@ -185,8 +185,8 @@ const resources = {
       "clearSteamCacheDesc": "Clear existing game info from the database and fetch all info again during the next scan.",
       "threads": "Threads",
 
-      "headerTitle": "Game Index Console",
-      "headerSubtitle": "A show-off space for gaming hoarders",
+      "headerTitle": "Hoardster Console",
+      "headerSubtitle": "Hoardster's Showcase",
       "scanning": "Scanning...",
       "scraping": "Updating...",
       "incScan": "Incremental Scan",

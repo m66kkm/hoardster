@@ -1,11 +1,11 @@
 [package]
-name = "game-index"
+name = "hoardster"
 version = "1.0.3"
 description = "Tauri local game index application"
 edition = "2021"
 
 [lib]
-name = "game_index_lib"
+name = "hoardster_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
