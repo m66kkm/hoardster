@@ -55,8 +55,8 @@ Building a cyber-aesthetic, premium digital game showroom that you can't wait to
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/m66kkm/game-index.git
-cd game-index
+git clone https://github.com/m66kkm/hoardster.git
+cd hoardster
 
 # 2. Install frontend dependencies
 bun install

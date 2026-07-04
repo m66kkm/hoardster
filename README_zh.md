@@ -55,8 +55,8 @@
 
 ```bash
 # 1. 克隆代码仓库
-git clone https://github.com/m66kkm/game-index.git
-cd game-index
+git clone https://github.com/m66kkm/hoardster.git
+cd hoardster
 
 # 2. 安装前端依赖
 bun install
