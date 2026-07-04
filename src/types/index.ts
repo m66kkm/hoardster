@@ -59,3 +59,16 @@ export interface ProgressPayload {
   current: number;
   total: number;
 }
+
+export interface Torrent1337x {
+  id?: number;
+  torrent_id: string;
+  name: string;
+  url: string;
+  seeds: number;
+  leeches: number;
+  date: string;
+  size: string;
+  uploader: string;
+  uploader_url: string;
+}

@@ -6,9 +6,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
+use rusqlite::params;
+use rusqlite::Connection;
+use regex::Regex;
 
 /// 扫描状态，用于支持取消扫描操作
 pub struct ScanState {
+    pub is_cancelled: Arc<AtomicBool>,
+}
+
+/// 抓取状态，用于支持取消 1337x 抓取操作
+pub struct ScrapeState {
     pub is_cancelled: Arc<AtomicBool>,
 }
 
@@ -151,12 +159,232 @@ fn get_rating_stats_command(state: tauri::State<'_, db::DbState>) -> Result<Vec<
 }
 
 #[tauri::command]
+fn get_torrents_1337x_command(state: tauri::State<'_, db::DbState>) -> Result<Vec<db::Torrent1337x>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::get_torrents_1337x(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn open_game_folder_command(path: String) -> Result<(), String> {
     use std::process::Command;
     Command::new("explorer")
         .arg(&path)
         .spawn()
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_url_command(url: String) -> Result<(), String> {
+    use std::process::Command;
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, serde::Serialize)]
+struct ScrapeProgress {
+    current_page: u32,
+    total_pages: u32,
+    message: String,
+    status: String,
+}
+
+#[derive(Debug)]
+struct ScrapedTorrent {
+    torrent_id: String,
+    name: String,
+    url: String,
+    seeds: i64,
+    leeches: i64,
+    date: String,
+    size: String,
+    uploader: String,
+    uploader_url: String,
+}
+
+fn decode_simple_entities(s: &str) -> String {
+    s.replace("&amp;", "&")
+     .replace("&quot;", "\"")
+     .replace("&#39;", "'")
+     .replace("&lt;", "<")
+     .replace("&gt;", ">")
+}
+
+fn parse_page_html(html: &str) -> Vec<ScrapedTorrent> {
+    let mut torrents = Vec::new();
+    let tr_regex = Regex::new(r"(?s)<tr>(.*?)</tr>").unwrap();
+    let url_name_regex = Regex::new(r#"href="(?P<url>/torrent/(?P<id>\d+)/[^"]*)"[^>]*>(?P<name>[^<]+)</a>"#).unwrap();
+    let seeds_regex = Regex::new(r#"class="[^"]*seeds"[^>]*>(?P<seeds>\d+)</td>"#).unwrap();
+    let leeches_regex = Regex::new(r#"class="[^"]*leeches"[^>]*>(?P<leeches>\d+)</td>"#).unwrap();
+    let date_regex = Regex::new(r#"class="coll-date"[^>]*>(?P<date>[^<]+)</td>"#).unwrap();
+    let size_regex = Regex::new(r#"class="[^"]*size[^"]*"[^>]*>(?P<size>[^<]+)</td>"#).unwrap();
+    let uploader_regex = Regex::new(r#"href="(?P<url>/user/[^"]*)"[^>]*>(?P<name>[^<]+)</a>"#).unwrap();
+
+    for cap in tr_regex.captures_iter(html) {
+        let row_html = &cap[1];
+        if let Some(url_cap) = url_name_regex.captures(row_html) {
+            let id = url_cap["id"].to_string();
+            let name = decode_simple_entities(&url_cap["name"]).trim().to_string();
+            let url = format!("https://www.1337xx.to{}", &url_cap["url"]);
+            
+            let seeds = seeds_regex.captures(row_html)
+                .map(|c| c["seeds"].parse::<i64>().unwrap_or(0))
+                .unwrap_or(0);
+            let leeches = leeches_regex.captures(row_html)
+                .map(|c| c["leeches"].parse::<i64>().unwrap_or(0))
+                .unwrap_or(0);
+            let date = date_regex.captures(row_html)
+                .map(|c| c["date"].trim().to_string())
+                .unwrap_or_default();
+            let size = size_regex.captures(row_html)
+                .map(|c| c["size"].trim().to_string())
+                .unwrap_or_default();
+            
+            let uploader = uploader_regex.captures(row_html)
+                .map(|c| decode_simple_entities(&c["name"]).trim().to_string())
+                .unwrap_or_else(|| "Anonymous".to_string());
+            let uploader_url = uploader_regex.captures(row_html)
+                .map(|c| format!("https://www.1337xx.to{}", &c["url"]))
+                .unwrap_or_default();
+
+            torrents.push(ScrapedTorrent {
+                torrent_id: id,
+                name,
+                url,
+                seeds,
+                leeches,
+                date,
+                size,
+                uploader,
+                uploader_url,
+            });
+        }
+    }
+    torrents
+}
+
+#[tauri::command]
+async fn scrape_1337x_command(
+    mode: String,
+    app_handle: tauri::AppHandle,
+    scrape_state: tauri::State<'_, ScrapeState>,
+) -> Result<(), String> {
+    use tauri::Emitter;
+    use tokio::time::{sleep, Duration};
+    use std::process::Command;
+
+    let cancel_flag = scrape_state.is_cancelled.clone();
+    cancel_flag.store(false, Ordering::Relaxed);
+
+    let total_pages = 150;
+    let mut page = 1;
+
+    while page <= total_pages {
+        let event_name = format!("scrape-progress-{}", mode);
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = app_handle.emit(&event_name, ScrapeProgress {
+                current_page: page - 1,
+                total_pages,
+                message: "抓取任务已被用户取消".to_string(),
+                status: "error".to_string(),
+            });
+            return Ok(());
+        }
+
+        let _ = app_handle.emit(&event_name, ScrapeProgress {
+            current_page: page,
+            total_pages,
+            message: format!("正在获取第 {}/{} 页种子列表...", page, total_pages),
+            status: "fetching".to_string(),
+        });
+
+        let url = match mode.as_str() {
+            "leechers" => format!("https://www.1337xx.to/sort-cat/Games/leechers/desc/{}/", page),
+            "seeders" => format!("https://www.1337xx.to/sort-cat/Games/seeders/desc/{}/", page),
+            _ => format!("https://www.1337xx.to/cat/Games/{}/", page),
+        };
+        
+        let output = Command::new("curl")
+            .args([
+                "-s",
+                "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                &url
+            ])
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                let html = String::from_utf8_lossy(&out.stdout).to_string();
+                let parsed = parse_page_html(&html);
+                if !parsed.is_empty() {
+                    let db_path = db::get_db_path();
+                    tokio::task::spawn_blocking(move || {
+                        if let Ok(mut conn) = Connection::open(db_path) {
+                            if let Ok(tx) = conn.transaction() {
+                                for t in parsed {
+                                    let _ = tx.execute(
+                                        "INSERT OR REPLACE INTO torrents_1337x (
+                                            torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url
+                                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                        params![
+                                            t.torrent_id,
+                                            t.name,
+                                            t.url,
+                                            t.seeds,
+                                            t.leeches,
+                                            t.date,
+                                            t.size,
+                                            t.uploader,
+                                            t.uploader_url,
+                                        ],
+                                    );
+                                }
+                                let _ = tx.commit();
+                            }
+                        }
+                    }).await.map_err(|e| e.to_string())?;
+                }
+            }
+        }
+
+        page += 1;
+        sleep(Duration::from_millis(200)).await;
+    }
+
+    let event_name = format!("scrape-progress-{}", mode);
+    let _ = app_handle.emit(&event_name, ScrapeProgress {
+        current_page: total_pages,
+        total_pages,
+        message: "更新完成！1337x 数据已成功同步至本地。".to_string(),
+        status: "complete".to_string(),
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_scrape_command(scrape_state: tauri::State<'_, ScrapeState>) -> Result<(), String> {
+    scrape_state.is_cancelled.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -176,6 +404,10 @@ pub fn run() {
             app.manage(db::DbState(Mutex::new(conn)));
             // 注册扫描状态到 Tauri 托管状态
             app.manage(ScanState {
+                is_cancelled: Arc::new(AtomicBool::new(false)),
+            });
+            // 注册抓取取消状态到 Tauri 托管状态
+            app.manage(ScrapeState {
                 is_cancelled: Arc::new(AtomicBool::new(false)),
             });
 
@@ -228,6 +460,10 @@ pub fn run() {
             get_all_genres_command,
             get_genre_stats_command,
             get_rating_stats_command,
+            get_torrents_1337x_command,
+            open_url_command,
+            scrape_1337x_command,
+            cancel_scrape_command,
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");

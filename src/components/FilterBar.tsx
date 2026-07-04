@@ -54,36 +54,40 @@ export default function FilterBar({
           placeholder={t("filterSearch")}
         />
       </div>
-      <select
-        value={driveVal}
-        onChange={(e) => setDriveVal(e.target.value)}
-        className="filter-select"
-      >
-        <option value="">{t("filterAllDrives")}</option>
-        {scanPaths.map((p) => (
-          <option key={p} value={p}>{p}</option>
-        ))}
-      </select>
-      <select
-        value={typeVal}
-        onChange={(e) => setTypeVal(e.target.value)}
-        className="filter-select"
-      >
-        <option value="">所有游戏类型</option>
-        {genres && genres.map((g) => (
-          <option key={g} value={g}>{g}</option>
-        ))}
-      </select>
-      <select
-        value={ratingVal}
-        onChange={(e) => setRatingVal(e.target.value)}
-        className="filter-select"
-      >
-        <option value="">所有评价热度</option>
-        {ratings && ratings.map((r) => (
-          <option key={r} value={r}>{r}</option>
-        ))}
-      </select>
+      {activeTab !== "torrents1337" && (
+        <>
+          <select
+            value={driveVal}
+            onChange={(e) => setDriveVal(e.target.value)}
+            className="filter-select"
+          >
+            <option value="">{t("filterAllDrives")}</option>
+            {scanPaths.map((p) => (
+              <option key={p} value={p}>{p}</option>
+            ))}
+          </select>
+          <select
+            value={typeVal}
+            onChange={(e) => setTypeVal(e.target.value)}
+            className="filter-select"
+          >
+            <option value="">所有游戏类型</option>
+            {genres && genres.map((g) => (
+              <option key={g} value={g}>{g}</option>
+            ))}
+          </select>
+          <select
+            value={ratingVal}
+            onChange={(e) => setRatingVal(e.target.value)}
+            className="filter-select"
+          >
+            <option value="">所有评价热度</option>
+            {ratings && ratings.map((r) => (
+              <option key={r} value={r}>{r}</option>
+            ))}
+          </select>
+        </>
+      )}
       
       {(activeTab === "posters" || activeTab === "installed" || activeTab === "all") && (
         <select
@@ -98,6 +102,22 @@ export default function FilterBar({
           <option value="steam-asc">{t("filterSortSteamAsc")}</option>
           <option value="size-desc">{t("filterSortSizeDesc")}</option>
           <option value="size-asc">{t("filterSortSizeAsc")}</option>
+        </select>
+      )}
+
+      {activeTab === "torrents1337" && (
+        <select
+          value={sortVal}
+          onChange={(e) => setSortVal(e.target.value)}
+          className="filter-select"
+        >
+          <option value="">默认排序 (Leechers)</option>
+          <option value="seeds-desc">种子数从多到少 (Seeds)</option>
+          <option value="seeds-asc">种子数从少到多 (Seeds)</option>
+          <option value="leeches-desc">下载数从多到少 (Leechers)</option>
+          <option value="leeches-asc">下载数从少到多 (Leechers)</option>
+          <option value="size-desc">文件从大到小 (Size)</option>
+          <option value="size-asc">文件从小到大 (Size)</option>
         </select>
       )}
 

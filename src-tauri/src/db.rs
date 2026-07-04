@@ -173,6 +173,24 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // 6. 1337x 种子数据表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS torrents_1337x (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            torrent_id TEXT UNIQUE,
+            name TEXT,
+            url TEXT,
+            seeds INTEGER,
+            leeches INTEGER,
+            date TEXT,
+            size TEXT,
+            uploader TEXT,
+            uploader_url TEXT,
+            fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )",
+        [],
+    )?;
+
     // 初始化默认配置项（仅在对应 key 不存在时插入）
     let default_configs = vec![
         ("theme", "dark"),
@@ -806,6 +824,49 @@ pub fn get_scan_history(conn: &Connection) -> Result<Vec<ScanHistoryRecord>> {
             new_games: row.get(4)?,
             new_steam_entries: row.get(5)?,
             status: row.get(6)?,
+        })
+    })?;
+
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct Torrent1337x {
+    pub id: Option<i64>,
+    pub torrent_id: String,
+    pub name: String,
+    pub url: String,
+    pub seeds: i64,
+    pub leeches: i64,
+    pub date: String,
+    pub size: String,
+    pub uploader: String,
+    pub uploader_url: String,
+}
+
+pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url
+         FROM torrents_1337x
+         ORDER BY leeches DESC"
+    )?;
+
+    let rows = stmt.query_map([], |row| {
+        Ok(Torrent1337x {
+            id: Some(row.get(0)?),
+            torrent_id: row.get(1)?,
+            name: row.get(2)?,
+            url: row.get(3)?,
+            seeds: row.get(4)?,
+            leeches: row.get(5)?,
+            date: row.get(6)?,
+            size: row.get(7)?,
+            uploader: row.get(8)?,
+            uploader_url: row.get(9)?,
         })
     })?;
 

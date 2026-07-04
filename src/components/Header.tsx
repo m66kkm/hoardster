@@ -1,17 +1,10 @@
-import { Play, Settings, Database } from "lucide-react";
+import { Settings, Database, Home, Radar } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useAppStore } from "../stores/useAppStore";
 
-interface HeaderProps {
-  isScanning: boolean;
-  onStartScan: () => void;
-  onSettingsClick: () => void;
-  isSettingsActive: boolean;
-  onIndexClick: () => void;
-  isIndexActive: boolean;
-}
-
-export default function Header({ isScanning, onStartScan, onSettingsClick, isSettingsActive, onIndexClick, isIndexActive }: HeaderProps) {
+export default function Header() {
   const { t } = useTranslation();
+  const { menuMode, setMenuMode } = useAppStore();
 
   return (
     <header>
@@ -21,25 +14,32 @@ export default function Header({ isScanning, onStartScan, onSettingsClick, isSet
       </div>
       <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
         <button 
-          className="action-btn" 
-          onClick={onStartScan} 
-          disabled={isScanning}
-          style={{ padding: "0.5rem 1rem", fontSize: "0.85rem" }}
+          className={`view-btn ${menuMode === "home" ? "active" : ""}`}
+          onClick={() => setMenuMode("home")}
+          style={{ padding: "0.5rem" }}
+          title={t("homeBtn")}
         >
-          <Play size={14} className={isScanning ? "animate-spin" : ""} />
-          {isScanning ? t("scanning") : t("incScan")}
+          <Home size={18} />
         </button>
         <button 
-          className={`view-btn ${isIndexActive ? "active" : ""}`}
-          onClick={onIndexClick}
+          className={`view-btn ${menuMode === "local" ? "active" : ""}`}
+          onClick={() => setMenuMode("local")}
           style={{ padding: "0.5rem" }}
           title={t("tabAll")}
         >
           <Database size={18} />
         </button>
         <button 
-          className={`view-btn ${isSettingsActive ? "active" : ""}`}
-          onClick={onSettingsClick}
+          className={`view-btn ${menuMode === "radar" ? "active" : ""}`}
+          onClick={() => setMenuMode("radar")}
+          style={{ padding: "0.5rem" }}
+          title={t("radarBtn")}
+        >
+          <Radar size={18} />
+        </button>
+        <button 
+          className={`view-btn ${menuMode === "settings" ? "active" : ""}`}
+          onClick={() => setMenuMode("settings")}
           style={{ padding: "0.5rem" }}
           title={t("settingsBtn")}
         >

@@ -1,31 +1,27 @@
-import {
-  Monitor,
-  Sparkles,
-  HardDrive,
-  Layers
-} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { motion } from "framer-motion";
+import type { ReactNode } from "react";
 
-interface TabNavProps {
-  activeTab: string;
-  onTabChange: (tab: string) => void;
+export interface TabDef {
+  id: string;
+  icon: LucideIcon;
+  labelKey: string;
 }
 
-const TABS = [
-  { id: "dashboard", icon: Monitor, labelKey: "tabDashboard" },
-  { id: "posters", icon: Sparkles, labelKey: "tabPosters" },
-  { id: "installed", icon: HardDrive, labelKey: "tabInstalled" },
-  { id: "franchise", icon: Layers, labelKey: "tabFranchise" },
-  { id: "duplicates", icon: Layers, labelKey: "tabDuplicates" },
-];
+interface TabNavProps {
+  tabs: TabDef[];
+  activeTab: string;
+  onTabChange: (tab: string) => void;
+  rightAction?: ReactNode;
+}
 
-export default function TabNav({ activeTab, onTabChange }: TabNavProps) {
+export default function TabNav({ tabs, activeTab, onTabChange, rightAction }: TabNavProps) {
   const { t } = useTranslation();
 
   return (
-    <nav className="tabs-nav">
-      {TABS.map((tab) => {
+    <nav className="tabs-nav" style={{ display: "flex", alignItems: "center" }}>
+      {tabs.map((tab) => {
         const Icon = tab.icon;
         const isActive = activeTab === tab.id;
         return (
@@ -56,6 +52,8 @@ export default function TabNav({ activeTab, onTabChange }: TabNavProps) {
           </button>
         );
       })}
+
+      {rightAction}
     </nav>
   );
 }
