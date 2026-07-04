@@ -324,13 +324,19 @@ async fn scrape_1337x_command(
             _ => format!("https://www.1337xx.to/cat/Games/{}/", page),
         };
         
-        let output = Command::new("curl")
-            .args([
-                "-s",
-                "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                &url
-            ])
-            .output();
+        #[cfg(target_os = "windows")]
+        use std::os::windows::process::CommandExt;
+
+        let mut cmd = Command::new("curl");
+        cmd.args([
+            "-s",
+            "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            &url
+        ]);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+        let output = cmd.output();
 
         if let Ok(out) = output {
             if out.status.success() {
