@@ -1,18 +1,19 @@
 [English](README.md) | [简体中文](README_zh.md)
 
-# Game Index (A show-off space for gaming hoarders)
+# Hoardster
 
 <p align="center">
-  <img src="assets/app_logo.jpg" width="200" alt="App Logo" />
+  <img src="assets/mascot.jpg" width="400" alt="Hoardster Mascot" />
+</p>
+<p align="center">
+  <em>Hoardster — Welcome to Hammy's Game Den.</em>
 </p>
 
-**Game Index** is more than just a local game manager—it's the ultimate weapon and private showroom tailored specifically for **"Gaming Hoarders"** (digital collectors who love hoarding massive amounts of indie games, ISO images, and pre-installed repacks).
+**Hoardster** is more than just a local game manager—it's the ultimate weapon and private showroom tailored specifically for **"Gaming Hoarders"** (digital collectors who love hoarding massive amounts of indie games, ISO images, and pre-installed repacks).
 
-Tired of looking at messy folders named "fitgirl-repack", "XYZ-cracked", or "Portable-Version"? Game Index scans your hard drives at millisecond speeds, automatically cleans up those chaotic names, and intelligently matches them with the official Steam API. It automatically retrieves authentic official names, release dates, user ratings, and caches high-definition posters locally for offline viewing.
+Tired of looking at messy folders named "fitgirl-repack", "XYZ-cracked", or "Portable-Version"? Hoardster scans your hard drives at millisecond speeds, automatically cleans up those chaotic names, and intelligently matches them with the official Steam API. It automatically retrieves authentic official names, release dates, user ratings, and caches high-definition posters locally for offline viewing.
 
-Building a cyber-aesthetic, premium digital game showroom that you can't wait to show off to your friends has never been this easy!
-
-![Mascot](assets/mascot.jpg)
+Building a cyber-aesthetic, premium digital game showroom that you can't wait to show off to your friends has never been this easy! It successfully transforms the storage and management of massive game data into a concrete and immersive experience. Open the app, and you'll no longer see cold local directories and file management tools, but a private exclusive territory full of cyber sci-fi vibes and empowerment.
 
 ## ✨ Features
 
@@ -20,6 +21,7 @@ Building a cyber-aesthetic, premium digital game showroom that you can't wait to
 - 🔍 **Smart Deduplication & Version Merging**: Automatically identifies exact duplicate files and multiple versions/DLC repacks of the same game, helping you find those hard drive space killers.
 - 🎮 **Automated Steam Data Matching**: Accurately requests the Steam API to automatically fetch official localized names, release dates, and user ratings, as well as caching high-definition posters locally.
 - 🧩 **Franchise Association**: Intelligently recognizes game series like "Assassin's Creed" or "Dark Souls" and automatically groups them into Franchise cards.
+- 📡 **1337x Intel Scraper**: In-built scraper for discovering the latest, top-downloaded (leechers), and most-seeded (seeders) releases with parallel task execution.
 - 🎨 **Premium Dark Visual Aesthetics**: Carefully designed Glassmorphism style paired with cool neon cyber gradient lighting effects, providing you with a top-tier digital showroom experience.
 - ⚙️ **High-Performance Architecture**: Built on a lightweight backend using Rust + Tauri, with lightning-fast SQLite storage.
 
@@ -36,9 +38,9 @@ Building a cyber-aesthetic, premium digital game showroom that you can't wait to
 
 ## 🛠️ Tech Stack
 
-- **Frontend UI**: React 18, TypeScript, Vite
+- **Frontend UI**: React 18, TypeScript, Vite, Zustand
 - **Styling & Design**: Vanilla CSS (Minimalist custom global variable system)
-- **Backend Engine**: Rust, Tauri v1
+- **Backend Engine**: Rust, Tauri v2
 - **Database**: SQLite (rusqlite)
 - **Runtime**: Bun
 
