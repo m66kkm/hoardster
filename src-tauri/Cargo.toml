@@ -25,3 +25,4 @@ chrono = { version = "0.4", features = ["serde"] }
 tauri-plugin-dialog = "2"
 jwalk = "0.8.1"
 rayon = "1.12.0"
+tauri-plugin-shell = "2.3.5"

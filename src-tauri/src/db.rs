@@ -46,6 +46,29 @@ pub struct SteamCacheEntry {
     pub genres: Option<String>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct EpicFreeGame {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub status: String,
+    pub start_date: String,
+    pub end_date: String,
+    pub image_url: String,
+    pub game_url: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SteamFreeGame {
+    pub id: i64,
+    pub title: String,
+    pub description: String,
+    pub r#type: String,
+    pub end_date: String,
+    pub image_url: String,
+    pub giveaway_url: String,
+}
+
 #[derive(serde::Serialize, Debug)]
 pub struct DuplicateGroup {
     pub name: String,
@@ -187,6 +210,35 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             uploader TEXT,
             uploader_url TEXT,
             fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )",
+        [],
+    )?;
+
+    // 7. Epic 免费游戏表
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS epic_free_games (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            description TEXT,
+            status TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            image_url TEXT,
+            game_url TEXT
+        )",
+        [],
+    )?;
+
+    // 8. Steam 免费获取表 (GamerPower)
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS steam_free_games (
+            id INTEGER PRIMARY KEY,
+            title TEXT,
+            description TEXT,
+            type TEXT,
+            end_date TEXT,
+            image_url TEXT,
+            giveaway_url TEXT
         )",
         [],
     )?;
@@ -798,12 +850,105 @@ pub fn insert_scan_history(
     new_steam_entries: i64,
     status: &str,
 ) -> Result<()> {
-    conn.execute(
+    let _ = conn.execute(
         "INSERT INTO scan_history (started_at, completed_at, total_scanned, new_games, new_steam_entries, status)
          VALUES (?, ?, ?, ?, ?, ?)",
-        params![started_at, completed_at, total_scanned, new_games, new_steam_entries, status],
-    )?;
+        params![
+            started_at,
+            completed_at,
+            total_scanned,
+            new_games,
+            new_steam_entries,
+            status
+        ],
+    );
     Ok(())
+}
+
+pub fn save_epic_free_games(conn: &Connection, games: &[EpicFreeGame]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT OR REPLACE INTO epic_free_games (id, title, description, status, start_date, end_date, image_url, game_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    )?;
+
+    for g in games {
+        stmt.execute(params![
+            g.id,
+            g.title,
+            g.description,
+            g.status,
+            g.start_date,
+            g.end_date,
+            g.image_url,
+            g.game_url
+        ])?;
+    }
+    
+    Ok(())
+}
+
+pub fn get_epic_free_games(conn: &Connection) -> Result<Vec<EpicFreeGame>> {
+    let mut stmt = conn.prepare("SELECT id, title, description, status, start_date, end_date, image_url, game_url FROM epic_free_games")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(EpicFreeGame {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            description: row.get(2)?,
+            status: row.get(3)?,
+            start_date: row.get(4)?,
+            end_date: row.get(5)?,
+            image_url: row.get(6)?,
+            game_url: row.get(7)?,
+        })
+    })?;
+
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+pub fn save_steam_free_games(conn: &Connection, games: &[SteamFreeGame]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT OR REPLACE INTO steam_free_games (id, title, description, type, end_date, image_url, giveaway_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )?;
+
+    for g in games {
+        stmt.execute(params![
+            g.id,
+            g.title,
+            g.description,
+            g.r#type,
+            g.end_date,
+            g.image_url,
+            g.giveaway_url
+        ])?;
+    }
+    
+    Ok(())
+}
+
+pub fn get_steam_free_games(conn: &Connection) -> Result<Vec<SteamFreeGame>> {
+    let mut stmt = conn.prepare("SELECT id, title, description, type, end_date, image_url, giveaway_url FROM steam_free_games")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(SteamFreeGame {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            description: row.get(2)?,
+            r#type: row.get(3)?,
+            end_date: row.get(4)?,
+            image_url: row.get(5)?,
+            giveaway_url: row.get(6)?,
+        })
+    })?;
+
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
 }
 
 /// 获取最近 20 条扫描历史记录
@@ -852,7 +997,7 @@ pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
     let mut stmt = conn.prepare(
         "SELECT id, torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url
          FROM torrents_1337x
-         ORDER BY leeches DESC"
+         ORDER BY fetched_at DESC, id ASC"
     )?;
 
     let rows = stmt.query_map([], |row| {

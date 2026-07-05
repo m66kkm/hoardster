@@ -1,6 +1,8 @@
 mod db;
 mod error;
 mod scanner;
+mod epic;
+mod steam_api;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -298,6 +300,7 @@ async fn scrape_1337x_command(
 
     let total_pages = 150;
     let mut page = 1;
+    let session_time = chrono::Utc::now().to_rfc3339();
 
     while page <= total_pages {
         let event_name = format!("scrape-progress-{}", mode);
@@ -321,7 +324,7 @@ async fn scrape_1337x_command(
         let url = match mode.as_str() {
             "leechers" => format!("https://www.1337xx.to/sort-cat/Games/leechers/desc/{}/", page),
             "seeders" => format!("https://www.1337xx.to/sort-cat/Games/seeders/desc/{}/", page),
-            _ => format!("https://www.1337xx.to/cat/Games/{}/", page),
+            _ => format!("https://www.1337xx.to/sort-cat/Games/time/desc/{}/", page),
         };
         
         #[cfg(target_os = "windows")]
@@ -344,31 +347,48 @@ async fn scrape_1337x_command(
                 let parsed = parse_page_html(&html);
                 if !parsed.is_empty() {
                     let db_path = db::get_db_path();
-                    tokio::task::spawn_blocking(move || {
-                        if let Ok(mut conn) = Connection::open(db_path) {
-                            if let Ok(tx) = conn.transaction() {
-                                for t in parsed {
-                                    let _ = tx.execute(
-                                        "INSERT OR REPLACE INTO torrents_1337x (
-                                            torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url
-                                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                        params![
-                                            t.torrent_id,
-                                            t.name,
-                                            t.url,
-                                            t.seeds,
-                                            t.leeches,
-                                            t.date,
-                                            t.size,
-                                            t.uploader,
-                                            t.uploader_url,
-                                        ],
-                                    );
+                    let session_time_clone = session_time.clone();
+                    let has_existing = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+                        let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+                        let mut found_existing = false;
+                        if let Ok(tx) = conn.transaction() {
+                            for t in parsed {
+                                let exists: bool = tx.query_row(
+                                    "SELECT EXISTS(SELECT 1 FROM torrents_1337x WHERE torrent_id = ?)",
+                                    params![t.torrent_id],
+                                    |row| row.get(0),
+                                ).unwrap_or(false);
+                                
+                                if exists {
+                                    found_existing = true;
                                 }
-                                let _ = tx.commit();
+                                
+                                let _ = tx.execute(
+                                    "INSERT OR IGNORE INTO torrents_1337x (
+                                        torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, fetched_at
+                                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                    params![
+                                        t.torrent_id,
+                                        t.name,
+                                        t.url,
+                                        t.seeds,
+                                        t.leeches,
+                                        t.date,
+                                        t.size,
+                                        t.uploader,
+                                        t.uploader_url,
+                                        &session_time_clone,
+                                    ],
+                                );
                             }
+                            let _ = tx.commit();
                         }
-                    }).await.map_err(|e| e.to_string())?;
+                        Ok(found_existing)
+                    }).await.map_err(|e| e.to_string())??;
+                    
+                    if has_existing {
+                        break;
+                    }
                 }
             }
         }
@@ -397,6 +417,7 @@ fn cancel_scrape_command(scrape_state: tauri::State<'_, ScrapeState>) -> Result<
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 初始化数据库连接
@@ -470,6 +491,10 @@ pub fn run() {
             open_url_command,
             scrape_1337x_command,
             cancel_scrape_command,
+            epic::fetch_epic_free_games_command,
+            epic::get_epic_free_games_command,
+            steam_api::fetch_steam_free_games_command,
+            steam_api::get_steam_free_games_command
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");

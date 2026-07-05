@@ -1,8 +1,10 @@
 import { useState, useEffect } from "react";
-import { Download, Check, Copy, ExternalLink } from "lucide-react";
+import { Download, Check, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import type { Torrent1337x } from "../types";
+import SearchBox from "./shared/SearchBox";
+import SortSelect from "./shared/SortSelect";
 
 import { MOCK_TORRENTS } from "../mocks/mockTorrents";
 
@@ -21,14 +23,24 @@ const parseSizeInBytes = (sizeStr: string): number => {
   }
 };
 
+const formatSizeGB = (sizeStr: string): string => {
+  const bytes = parseSizeInBytes(sizeStr);
+  if (bytes === 0) return "0.0 GB";
+  const gb = bytes / (1024 * 1024 * 1024);
+  return `${gb.toFixed(1)} GB`;
+};
+
 interface Torrents1337PanelProps {
   showToast: (msg: string) => void;
   isScraping: boolean;
   scrapeProgress: number;
   scrapeMessage: string;
+  onStartScrape: () => void;
   onCancelScrape: () => void;
   searchVal: string;
+  setSearchVal: (v: string) => void;
   sortVal: string;
+  setSortVal: (v: string) => void;
 }
 
 export default function Torrents1337Panel({ 
@@ -36,9 +48,12 @@ export default function Torrents1337Panel({
   isScraping, 
   scrapeProgress, 
   scrapeMessage, 
+  onStartScrape,
   onCancelScrape,
   searchVal,
-  sortVal
+  setSearchVal,
+  sortVal,
+  setSortVal
 }: Torrents1337PanelProps) {
   const { t } = useTranslation();
   const [torrents, setTorrents] = useState<Torrent1337x[]>([]);
@@ -89,10 +104,14 @@ export default function Torrents1337Panel({
     filteredTorrents.sort((a, b) => parseSizeInBytes(b.size) - parseSizeInBytes(a.size));
   } else if (sortVal === "size-asc") {
     filteredTorrents.sort((a, b) => parseSizeInBytes(a.size) - parseSizeInBytes(b.size));
-  } else {
-    // Default sort by name
+  } else if (sortVal === "name-asc") {
     filteredTorrents.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (sortVal === "name-desc") {
+    filteredTorrents.sort((a, b) => b.name.localeCompare(a.name));
+  } else if (sortVal === "date-asc") {
+    filteredTorrents.reverse();
   }
+  // If sortVal is "date-desc" or empty, we do NOT sort and just use the array order from DB
 
   // Paginate filtered torrents
   const totalItems = filteredTorrents.length;
@@ -101,6 +120,16 @@ export default function Torrents1337Panel({
     (currentPage - 1) * pageSize,
     currentPage * pageSize
   );
+
+  const sortOptions = [
+    { value: "date-asc", label: "发布时间从旧到新 (Date)" },
+    { value: "seeds-desc", label: "种子数从多到少 (Seeds)" },
+    { value: "seeds-asc", label: "种子数从少到多 (Seeds)" },
+    { value: "leeches-desc", label: "下载数从多到少 (Leechers)" },
+    { value: "leeches-asc", label: "下载数从少到多 (Leechers)" },
+    { value: "size-desc", label: "文件从大到小 (Size)" },
+    { value: "size-asc", label: "文件从小到大 (Size)" }
+  ];
 
   const handleOpenUrl = (url: string) => {
     invoke("open_url_command", { url })
@@ -180,7 +209,7 @@ export default function Torrents1337Panel({
         </div>
       )}
 
-      <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem", flexWrap: "wrap", gap: "1rem" }}>
+      <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem", flexWrap: "wrap", gap: "1rem" }}>
         <div>
           <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Download size={22} style={{ color: "var(--primary-accent)" }} />
@@ -190,7 +219,34 @@ export default function Torrents1337Panel({
             搜索与获取最新的数字版镜像、Repack 与 Scene 种子（数据经本地过滤整理）。
           </p>
         </div>
+        <button 
+          className="action-btn" 
+          onClick={onStartScrape} 
+          disabled={isScraping}
+          style={{ 
+            padding: "0.4rem 0.9rem", 
+            fontSize: "0.85rem", 
+            borderRadius: "8px", 
+            height: "32px", 
+            display: "inline-flex", 
+            alignItems: "center", 
+            gap: "0.35rem" 
+          }}
+        >
+          <RefreshCw size={14} className={isScraping ? "animate-spin" : ""} />
+          {isScraping ? t("scraping") || "正在更新..." : "获取1337信息"}
+        </button>
       </div>
+
+      <section className="controls-row" style={{ display: "flex", gap: "1rem", alignItems: "center", marginBottom: "1.5rem" }}>
+        <SearchBox value={searchVal} onChange={setSearchVal} />
+        <SortSelect 
+          value={sortVal} 
+          onChange={setSortVal} 
+          options={sortOptions} 
+          defaultLabel="发布时间从新到旧 (Date)" 
+        />
+      </section>
 
       <div className="table-container">
         <table>
@@ -220,7 +276,7 @@ export default function Torrents1337Panel({
                       {t.name}
                     </a>
                   </td>
-                  <td style={{ fontFamily: "'Outfit', sans-serif" }}>{t.size}</td>
+                  <td style={{ fontFamily: "'Outfit', sans-serif" }}>{formatSizeGB(t.size)}</td>
                   <td style={{ color: "#10b981", fontWeight: 600 }}>{t.seeds.toLocaleString()}</td>
                   <td style={{ color: "#ef4444", fontWeight: 600 }}>{t.leeches.toLocaleString()}</td>
                   <td>{t.date}</td>
