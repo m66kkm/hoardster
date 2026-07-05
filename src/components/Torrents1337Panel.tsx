@@ -6,7 +6,6 @@ import type { Torrent1337x } from "../types";
 import SearchBox from "./shared/SearchBox";
 import SortSelect from "./shared/SortSelect";
 
-import { MOCK_TORRENTS } from "../mocks/mockTorrents";
 
 const parseSizeInBytes = (sizeStr: string): number => {
   const clean = sizeStr.trim().toUpperCase();
@@ -68,15 +67,15 @@ export default function Torrents1337Panel({
     if (!isScraping) {
       invoke<Torrent1337x[]>("get_torrents_1337x_command")
         .then((data) => {
-          if (data && data.length > 0) {
+          if (data) {
             setTorrents(data);
           } else {
-            setTorrents(MOCK_TORRENTS);
+            setTorrents([]);
           }
         })
         .catch((err) => {
-          console.error("加载种子列表失败, 使用 Mock 数据:", err);
-          setTorrents(MOCK_TORRENTS);
+          console.error("加载种子列表失败:", err);
+          setTorrents([]);
         });
     }
   }, [isScraping]);
