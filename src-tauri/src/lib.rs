@@ -250,6 +250,13 @@ fn parse_1337x_date(date_str: &str) -> i64 {
             if unit.starts_with("year") { return now - num * 365 * 86400; }
         }
     }
+
+    if lower.contains("today") || lower.contains("am") || lower.contains("pm") {
+        return now;
+    }
+    if lower.contains("yesterday") {
+        return now - 86400;
+    }
     
     let current_year = chrono::Utc::now().year();
     let mut year = current_year;
