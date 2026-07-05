@@ -71,4 +71,5 @@ export interface Torrent1337x {
   size: string;
   uploader: string;
   uploader_url: string;
+  published_ts: number;
 }

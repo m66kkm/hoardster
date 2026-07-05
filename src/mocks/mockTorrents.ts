@@ -10,7 +10,8 @@ export const MOCK_TORRENTS: Torrent1337x[] = [
     date: "2024-08-20",
     uploader: "RUNE",
     url: "https://www.1337xx.to/torrent/5563915/Hogwarts-Legacy-Deluxe-Edition-EMPRESS/",
-    uploader_url: "https://www.1337xx.to/user/0xEMPRESS/"
+    uploader_url: "https://www.1337xx.to/user/0xEMPRESS/",
+    published_ts: 0
   },
   {
     torrent_id: "2",
@@ -21,6 +22,7 @@ export const MOCK_TORRENTS: Torrent1337x[] = [
     date: "2024-06-21",
     uploader: "FitGirl",
     url: "https://www.1337xx.to/torrent/6220058/God-of-War-Ragnarok-Digital-Deluxe-Edition-All-DLCs-Bonuses-6-GB-VRAM-Bypass-MULTi22-FitGirl-Repack-Selective-Download-from-65-1-GB/",
-    uploader_url: "https://www.1337xx.to/user/FitGirl/"
+    uploader_url: "https://www.1337xx.to/user/FitGirl/",
+    published_ts: 0
   }
 ];

@@ -209,10 +209,14 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             size TEXT,
             uploader TEXT,
             uploader_url TEXT,
-            fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            published_ts INTEGER DEFAULT 0
         )",
         [],
     )?;
+
+    // Add published_ts column if not exists (for existing databases)
+    conn.execute("ALTER TABLE torrents_1337x ADD COLUMN published_ts INTEGER DEFAULT 0", []).ok();
 
     // 7. Epic 免费游戏表
     conn.execute(
@@ -991,13 +995,14 @@ pub struct Torrent1337x {
     pub size: String,
     pub uploader: String,
     pub uploader_url: String,
+    pub published_ts: i64,
 }
 
 pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
     let mut stmt = conn.prepare(
-        "SELECT id, torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url
+        "SELECT id, torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, published_ts
          FROM torrents_1337x
-         ORDER BY fetched_at DESC, id ASC"
+         ORDER BY published_ts DESC, id ASC"
     )?;
 
     let rows = stmt.query_map([], |row| {
@@ -1012,6 +1017,7 @@ pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
             size: row.get(7)?,
             uploader: row.get(8)?,
             uploader_url: row.get(9)?,
+            published_ts: row.get(10).unwrap_or(0),
         })
     })?;
 

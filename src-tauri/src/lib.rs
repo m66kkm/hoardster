@@ -232,7 +232,60 @@ fn decode_simple_entities(s: &str) -> String {
      .replace("&gt;", ">")
 }
 
-fn parse_page_html(html: &str) -> Vec<ScrapedTorrent> {
+use chrono::Datelike;
+
+fn parse_1337x_date(date_str: &str) -> i64 {
+    let now = chrono::Utc::now().timestamp();
+    let lower = date_str.to_lowercase();
+    
+    if let Ok(re) = regex::Regex::new(r"^(\d+)\s+(min|hr|hour|day|week|month|year)") {
+        if let Some(caps) = re.captures(&lower) {
+            let num: i64 = caps[1].parse().unwrap_or(0);
+            let unit = &caps[2];
+            if unit.starts_with("min") { return now - num * 60; }
+            if unit.starts_with("hr") || unit.starts_with("hour") { return now - num * 3600; }
+            if unit.starts_with("day") { return now - num * 86400; }
+            if unit.starts_with("week") { return now - num * 7 * 86400; }
+            if unit.starts_with("month") { return now - num * 30 * 86400; }
+            if unit.starts_with("year") { return now - num * 365 * 86400; }
+        }
+    }
+    
+    let current_year = chrono::Utc::now().year();
+    let mut year = current_year;
+    
+    if let Ok(re) = regex::Regex::new(r"'(\d{2})") {
+        if let Some(caps) = re.captures(&lower) {
+            let y: i32 = caps[1].parse().unwrap_or(0);
+            if y > 0 { year = 2000 + y; }
+        }
+    }
+    
+    let mut month = 1;
+    let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    for (i, m) in months.iter().enumerate() {
+        if lower.contains(m) {
+            month = i as u32 + 1;
+            break;
+        }
+    }
+    
+    let mut day = 1;
+    if let Ok(re) = regex::Regex::new(r"(\d+)(st|nd|rd|th)") {
+        if let Some(caps) = re.captures(&lower) {
+            day = caps[1].parse().unwrap_or(1);
+        }
+    }
+    
+    use chrono::TimeZone;
+    if let chrono::LocalResult::Single(dt) = chrono::Utc.with_ymd_and_hms(year, month, day, 0, 0, 0) {
+        return dt.timestamp();
+    }
+    
+    now
+}
+
+fn parse_page_html(html: &str) -> Vec<db::Torrent1337x> {
     let mut torrents = Vec::new();
     let tr_regex = Regex::new(r"(?s)<tr>(.*?)</tr>").unwrap();
     let url_name_regex = Regex::new(r#"href="(?P<url>/torrent/(?P<id>\d+)/[^"]*)"[^>]*>(?P<name>[^<]+)</a>"#).unwrap();
@@ -268,8 +321,11 @@ fn parse_page_html(html: &str) -> Vec<ScrapedTorrent> {
             let uploader_url = uploader_regex.captures(row_html)
                 .map(|c| format!("https://www.1337xx.to{}", &c["url"]))
                 .unwrap_or_default();
+            
+            let published_ts = parse_1337x_date(&date);
 
-            torrents.push(ScrapedTorrent {
+            torrents.push(db::Torrent1337x {
+                id: None,
                 torrent_id: id,
                 name,
                 url,
@@ -279,6 +335,7 @@ fn parse_page_html(html: &str) -> Vec<ScrapedTorrent> {
                 size,
                 uploader,
                 uploader_url,
+                published_ts,
             });
         }
     }
@@ -365,8 +422,8 @@ async fn scrape_1337x_command(
                                 
                                 let _ = tx.execute(
                                     "INSERT OR IGNORE INTO torrents_1337x (
-                                        torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, fetched_at
-                                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                        torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, fetched_at, published_ts
+                                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                     params![
                                         t.torrent_id,
                                         t.name,
@@ -378,6 +435,7 @@ async fn scrape_1337x_command(
                                         t.uploader,
                                         t.uploader_url,
                                         &session_time_clone,
+                                        t.published_ts,
                                     ],
                                 );
                             }
