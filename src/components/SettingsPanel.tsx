@@ -4,6 +4,7 @@ import ScanProgress from "./ScanProgress";
 import { useTranslation } from "react-i18next";
 import { STEAM_LANGUAGES } from "../i18n";
 import { invoke } from "@tauri-apps/api/core";
+import { ask, message } from "@tauri-apps/plugin-dialog";
 import { useScrape } from "../hooks/useScrape";
 
 interface SettingsPanelProps {
@@ -62,11 +63,26 @@ export default function SettingsPanel({
   const [isClearing, setIsClearing] = useState(false);
 
   const handleClear1337xData = async () => {
+    const confirmed = await ask(t("confirmClearDataDesc") || "Are you sure you want to clear the 1337x database?", {
+      title: t("confirmClearDataTitle") || "Confirm Clear Data",
+      kind: "warning",
+    });
+    
+    if (!confirmed) return;
+
     try {
       setIsClearing(true);
       await invoke("clear_data_1337x");
+      await message(t("clearDataSuccessDesc") || "The database has been successfully cleared.", {
+        title: t("clearDataSuccessTitle") || "Clear Data Success",
+        kind: "info",
+      });
     } catch (e) {
       console.error("Failed to clear 1337x data:", e);
+      await message("Failed to clear database.", {
+        title: "Error",
+        kind: "error",
+      });
     } finally {
       setIsClearing(false);
     }
