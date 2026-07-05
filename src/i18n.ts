@@ -22,6 +22,11 @@ export const STEAM_LANGUAGES = [
 ];
 
 export const mapSteamLangToBCP47 = (steamLang: string): string => {
+  if (!steamLang) return "en-US";
+  const lower = steamLang.toLowerCase();
+  if (lower.startsWith("en")) return "en-US";
+  if (lower.startsWith("zh")) return "zh-CN";
+  
   const map: Record<string, string> = {
     schinese: "zh-CN",
     english: "en-US",
@@ -41,7 +46,7 @@ export const mapSteamLangToBCP47 = (steamLang: string): string => {
     turkish: "tr-TR",
     latam: "es-419",
   };
-  return map[steamLang] || "en-US";
+  return map[lower] || "en-US";
 };
 
 
