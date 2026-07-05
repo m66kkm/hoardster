@@ -3,22 +3,22 @@ import { initReactI18next } from "react-i18next";
 
 export const STEAM_LANGUAGES = [
   { code: "schinese", name: "简体中文" },
-  { code: "english", name: "英语" },
-  { code: "french", name: "法语" },
-  { code: "italian", name: "意大利语" },
-  { code: "german", name: "德语" },
-  { code: "spanish", name: "西班牙语 - 西班牙" },
-  { code: "arabic", name: "阿拉伯语" },
-  { code: "czech", name: "捷克语" },
-  { code: "hungarian", name: "匈牙利语" },
-  { code: "japanese", name: "日语" },
-  { code: "koreana", name: "韩语" },
-  { code: "polish", name: "波兰语" },
-  { code: "brazilian", name: "葡萄牙语 - 巴西" },
-  { code: "russian", name: "俄语" },
-  { code: "tchinese", name: "繁体中文" },
-  { code: "turkish", name: "土耳其语" },
-  { code: "latam", name: "西班牙语 - 拉丁美洲" }
+  { code: "english", name: "English" },
+  { code: "french", name: "Français" },
+  { code: "italian", name: "Italiano" },
+  { code: "german", name: "Deutsch" },
+  { code: "spanish", name: "Español - España" },
+  { code: "arabic", name: "العربية" },
+  { code: "czech", name: "Čeština" },
+  { code: "hungarian", name: "Magyar" },
+  { code: "japanese", name: "日本語" },
+  { code: "koreana", name: "한국어" },
+  { code: "polish", name: "Polski" },
+  { code: "brazilian", name: "Português - Brasil" },
+  { code: "russian", name: "Русский" },
+  { code: "tchinese", name: "繁體中文" },
+  { code: "turkish", name: "Türkçe" },
+  { code: "latam", name: "Español - Latinoamérica" }
 ];
 
 const resources = {
