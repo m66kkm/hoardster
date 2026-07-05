@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
+use rayon::prelude::*;
 
 lazy_static::lazy_static! {
     static ref DIVIDERS_RE: Regex = Regex::new(r"[\._\-/:;]").unwrap();
@@ -192,15 +193,17 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         );
 
         if let Ok(entries) = fs::read_dir(path) {
-            for entry in entries.flatten() {
+            let valid_entries: Vec<_> = entries.flatten().collect();
+
+            let games: Vec<Game> = valid_entries.into_par_iter().filter_map(|entry| {
                 // 检查取消标志
                 if cancel_flag.load(Ordering::Relaxed) {
-                    return Err("扫描已被用户取消".to_string());
+                    return None;
                 }
 
                 let metadata = match entry.metadata() {
                     Ok(m) => m,
-                    Err(_) => continue,
+                    Err(_) => return None,
                 };
 
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -208,12 +211,12 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
 
                 // 跳过系统/隐藏文件夹
                 if name.starts_with('$') || name.starts_with('.') {
-                    continue;
+                    return None;
                 }
 
                 // 使用从 config 表读取的 exclude_folders 统一过滤所有扫描路径下的非游戏系统文件夹
                 if exclude_folders.contains(&lower_name) {
-                    continue;
+                    return None;
                 }
 
                 let is_dir = metadata.is_dir();
@@ -244,7 +247,7 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                     let clean = clean_name(&name);
                     let base = base_game_name(&name);
 
-                    raw_scanned.push(Game {
+                    Some(Game {
                         id: None,
                         original_name: name,
                         clean_name: clean,
@@ -266,9 +269,17 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                         total_reviews: None,
                         release_date: None,
                         genres: None,
-                    });
+                    })
+                } else {
+                    None
                 }
+            }).collect();
+
+            if cancel_flag.load(Ordering::Relaxed) {
+                return Err("扫描已被用户取消".to_string());
             }
+
+            raw_scanned.extend(games);
         }
     }
 
