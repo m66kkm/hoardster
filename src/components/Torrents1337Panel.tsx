@@ -7,18 +7,16 @@ import SearchBox from "./shared/SearchBox";
 import SortSelect from "./shared/SortSelect";
 
 
-const formatPublishDate = (ts: number, originalDate: string): string => {
+const formatPublishDate = (ts: number, originalDate: string, lang: string): string => {
   if (!ts) return originalDate; // Fallback for old data with published_ts = 0
   const d = new Date(ts * 1000);
   const year = d.getFullYear();
-  const month = d.getMonth() + 1;
-  const day = d.getDate();
   const currentYear = new Date().getFullYear();
   
   if (year === currentYear) {
-    return `${month}月${day}日`;
+    return new Intl.DateTimeFormat(lang, { month: 'short', day: 'numeric' }).format(d);
   } else {
-    return `${year}年${month}月`;
+    return new Intl.DateTimeFormat(lang, { year: 'numeric', month: 'short' }).format(d);
   }
 };
 
@@ -70,7 +68,7 @@ export default function Torrents1337Panel({
   sortVal,
   setSortVal
 }: Torrents1337PanelProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [torrents, setTorrents] = useState<Torrent1337x[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   
@@ -296,7 +294,7 @@ export default function Torrents1337Panel({
                   <td style={{ fontFamily: "'Outfit', sans-serif" }}>{formatSizeGB(t.size)}</td>
                   <td style={{ color: "#10b981", fontWeight: 600 }}>{t.seeds.toLocaleString()}</td>
                   <td style={{ color: "#ef4444", fontWeight: 600 }}>{t.leeches.toLocaleString()}</td>
-                  <td style={{ color: "var(--text-secondary)" }}>{formatPublishDate(t.published_ts, t.date)}</td>
+                  <td style={{ color: "var(--text-secondary)" }}>{formatPublishDate(t.published_ts, t.date, i18n.language)}</td>
                   <td>
                     <a 
                       href="#" 
