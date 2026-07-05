@@ -137,13 +137,14 @@ export default function Torrents1337Panel({
   );
 
   const sortOptions = [
-    { value: "date-asc", label: "发布时间从旧到新 (Date)" },
-    { value: "seeds-desc", label: "种子数从多到少 (Seeds)" },
-    { value: "seeds-asc", label: "种子数从少到多 (Seeds)" },
-    { value: "leeches-desc", label: "下载数从多到少 (Leechers)" },
-    { value: "leeches-asc", label: "下载数从少到多 (Leechers)" },
-    { value: "size-desc", label: "文件从大到小 (Size)" },
-    { value: "size-asc", label: "文件从小到大 (Size)" }
+    { value: "date-asc", label: t("t1337SortDateAsc") },
+    { value: "date-desc", label: t("t1337SortDateDesc") },
+    { value: "seeds-desc", label: t("t1337SortSeedsDesc") },
+    { value: "seeds-asc", label: t("t1337SortSeedsAsc") },
+    { value: "leeches-desc", label: t("t1337SortLeechesDesc") },
+    { value: "leeches-asc", label: t("t1337SortLeechesAsc") },
+    { value: "size-desc", label: t("t1337SortSizeDesc") },
+    { value: "size-asc", label: t("t1337SortSizeAsc") }
   ];
 
   const handleOpenUrl = (url: string) => {
@@ -157,10 +158,10 @@ export default function Torrents1337Panel({
   const handleCopyUrl = (url: string, id: string, name: string) => {
     navigator.clipboard.writeText(url).then(() => {
       setCopiedId(id);
-      showToast(`已成功复制种子网页链接: ${name}`);
+      showToast(`${t("t1337CopySuccess")}${name}`);
       setTimeout(() => setCopiedId(null), 2000);
     }).catch(() => {
-      showToast("链接复制失败！");
+      showToast(t("t1337CopyFail"));
     });
   };
 
@@ -218,7 +219,7 @@ export default function Torrents1337Panel({
               onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239, 68, 68, 0.2)"; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(239, 68, 68, 0.12)"; }}
             >
-              取消同步
+              {t("t1337BtnCancelSync")}
             </button>
           </div>
         </div>
@@ -228,10 +229,10 @@ export default function Torrents1337Panel({
         <div>
           <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Download size={22} style={{ color: "var(--primary-accent)" }} />
-            1337x 游戏资源索引
+            {t("t1337Title")}
           </h2>
           <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", marginTop: "0.25rem", marginBottom: 0 }}>
-            搜索与获取最新的数字版镜像、Repack 与 Scene 种子（数据经本地过滤整理）。
+            {t("t1337Desc")}
           </p>
         </div>
         <button 
@@ -249,7 +250,7 @@ export default function Torrents1337Panel({
           }}
         >
           <RefreshCw size={14} className={isScraping ? "animate-spin" : ""} />
-          {isScraping ? t("scraping") || "正在更新..." : "获取1337信息"}
+          {isScraping ? t("scraping") : t("t1337BtnFetch")}
         </button>
       </div>
 
@@ -259,7 +260,7 @@ export default function Torrents1337Panel({
           value={sortVal} 
           onChange={setSortVal} 
           options={sortOptions} 
-          defaultLabel="发布时间从新到旧 (Date)" 
+          defaultLabel={t("t1337SortDateDesc")} 
         />
       </section>
 
@@ -267,59 +268,59 @@ export default function Torrents1337Panel({
         <table>
           <thead>
             <tr>
-              <th>种子发布名称</th>
-              <th style={{ width: "100px" }}>大小</th>
-              <th style={{ width: "90px", color: "#10b981" }}>做种 (S)</th>
-              <th style={{ width: "90px", color: "#ef4444" }}>下载 (L)</th>
-              <th style={{ width: "120px" }}>发布时间</th>
-              <th style={{ width: "100px" }}>发布者</th>
-              <th style={{ width: "120px", textAlign: "center" }}>操作</th>
+              <th>{t("t1337ColName")}</th>
+              <th style={{ width: "100px" }}>{t("t1337ColSize")}</th>
+              <th style={{ width: "90px", color: "#10b981" }}>{t("t1337ColSeeds")}</th>
+              <th style={{ width: "90px", color: "#ef4444" }}>{t("t1337ColLeeches")}</th>
+              <th style={{ width: "120px" }}>{t("t1337ColDate")}</th>
+              <th style={{ width: "100px" }}>{t("t1337ColUploader")}</th>
+              <th style={{ width: "120px", textAlign: "center" }}>{t("t1337ColActions")}</th>
             </tr>
           </thead>
           <tbody>
-            {paginatedTorrents.map((t) => {
-              const uniqueKey = t.torrent_id || t.name;
+            {paginatedTorrents.map((torrent) => {
+              const uniqueKey = torrent.torrent_id || torrent.name;
               return (
                 <tr key={uniqueKey}>
                   <td style={{ fontWeight: 600 }}>
                     <a 
                       href="#" 
-                      onClick={(e) => { e.preventDefault(); handleOpenUrl(t.url); }}
+                      onClick={(e) => { e.preventDefault(); handleOpenUrl(torrent.url); }}
                       style={{ color: "var(--text-primary)", textDecoration: "none", borderBottom: "1px dashed var(--primary-accent)" }}
-                      title="点击在浏览器中打开种子网页"
+                      title={t("t1337TipOpenPage")}
                     >
-                      {t.name}
+                      {torrent.name}
                     </a>
                   </td>
-                  <td style={{ fontFamily: "'Outfit', sans-serif" }}>{formatSizeGB(t.size)}</td>
-                  <td style={{ color: "#10b981", fontWeight: 600 }}>{t.seeds.toLocaleString()}</td>
-                  <td style={{ color: "#ef4444", fontWeight: 600 }}>{t.leeches.toLocaleString()}</td>
-                  <td style={{ color: "var(--text-secondary)" }}>{formatPublishDate(t.published_ts, t.date, i18n.language)}</td>
+                  <td style={{ fontFamily: "'Outfit', sans-serif" }}>{formatSizeGB(torrent.size)}</td>
+                  <td style={{ color: "#10b981", fontWeight: 600 }}>{torrent.seeds.toLocaleString()}</td>
+                  <td style={{ color: "#ef4444", fontWeight: 600 }}>{torrent.leeches.toLocaleString()}</td>
+                  <td style={{ color: "var(--text-secondary)" }}>{formatPublishDate(torrent.published_ts, torrent.date, i18n.language)}</td>
                   <td>
                     <a 
                       href="#" 
-                      onClick={(e) => { e.preventDefault(); handleOpenUrl(t.uploader_url); }}
+                      onClick={(e) => { e.preventDefault(); handleOpenUrl(torrent.uploader_url); }}
                       className="badge badge-dir"
                       style={{ textDecoration: "none", cursor: "pointer" }}
-                      title="查看发布者主页"
+                      title={t("t1337TipUploader")}
                     >
-                      {t.uploader}
+                      {torrent.uploader}
                     </a>
                   </td>
                   <td style={{ textAlign: "center" }}>
                     <div style={{ display: "flex", gap: "0.35rem", justifyContent: "center" }}>
                       <button 
                         className="view-btn"
-                        onClick={() => handleOpenUrl(t.url)}
-                        title="在浏览器中打开页面"
+                        onClick={() => handleOpenUrl(torrent.url)}
+                        title={t("t1337TipOpenPage")}
                         style={{ padding: "0.4rem", display: "inline-flex" }}
                       >
                         <ExternalLink size={12} />
                       </button>
                       <button 
                         className={`view-btn ${copiedId === uniqueKey ? "active" : ""}`}
-                        onClick={() => handleCopyUrl(t.url, uniqueKey, t.name)}
-                        title="复制种子页面链接"
+                        onClick={() => handleCopyUrl(torrent.url, uniqueKey, torrent.name)}
+                        title={t("t1337TipCopy")}
                         style={{ padding: "0.4rem", display: "inline-flex" }}
                       >
                         {copiedId === uniqueKey ? <Check size={12} style={{ color: "#10b981" }} /> : <Copy size={12} />}
@@ -332,7 +333,7 @@ export default function Torrents1337Panel({
             {filteredTorrents.length === 0 && (
               <tr>
                 <td colSpan={7} style={{ textAlign: "center", padding: "3rem", color: "var(--text-secondary)" }}>
-                  未检索到任何符合条件的种子。
+                  {t("t1337Empty")}
                 </td>
               </tr>
             )}
