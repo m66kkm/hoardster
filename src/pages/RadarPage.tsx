@@ -29,8 +29,8 @@ export default function RadarPage() {
 
   const tabs: TabDef[] = [
     { id: "news", icon: Radio, labelKey: "tabNews" },
-    { id: "epic", icon: Gift, labelKey: "Epic 喜加一" },
-    { id: "steam", icon: Gamepad2, labelKey: "Steam 喜加一" },
+    { id: "epic", icon: Gift, labelKey: "tabEpic" },
+    { id: "steam", icon: Gamepad2, labelKey: "tabSteam" },
     { id: "torrents1337", icon: Download, labelKey: "tab1337" },
     { id: "sr", icon: Terminal, labelKey: "tabSR" }
   ];

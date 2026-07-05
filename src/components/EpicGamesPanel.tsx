@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Gift, Calendar, RefreshCw, ExternalLink } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 type EpicGame = {
   id: string;
@@ -14,6 +15,7 @@ type EpicGame = {
 };
 
 export default function EpicGamesPanel({ showToast }: { showToast: (msg: string) => void }) {
+  const { t, i18n } = useTranslation();
   const [games, setGames] = useState<EpicGame[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -42,9 +44,9 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
     try {
       const data = await invoke<EpicGame[]>("fetch_epic_free_games_command");
       setGames(sortGames(data));
-      showToast("获取 Epic 免费游戏情报成功！");
+      showToast(t("epicSuccess"));
     } catch (err: any) {
-      showToast("获取失败: " + err);
+      showToast(t("epicError") + err);
     } finally {
       setIsLoading(false);
     }
@@ -60,10 +62,10 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
         <div>
           <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Gift size={22} style={{ color: "var(--primary-accent)" }} />
-            Epic 喜加一情报
+            {t("epicTitle")}
           </h2>
           <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", marginTop: "0.25rem", marginBottom: 0 }}>
-            实时获取 Epic 平台当前免费及即将推出的免费游戏信息。
+            {t("epicDesc")}
           </p>
         </div>
         <button 
@@ -81,7 +83,7 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
           }}
         >
           <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
-          {isLoading ? "正在获取..." : "获取Epic信息"}
+          {isLoading ? t("epicBtnFetching") : t("epicBtnFetch")}
         </button>
       </div>
 
@@ -89,7 +91,9 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
         {games.map(game => {
             const startDate = new Date(game.start_date);
             const endDate = new Date(game.end_date);
-            const formattedDate = `${startDate.getMonth() + 1}月${startDate.getDate()}日 - ${endDate.getMonth() + 1}月${endDate.getDate()}日`;
+            const df = new Intl.DateTimeFormat(i18n.language, { month: 'short', day: 'numeric' });
+            const tf = new Intl.DateTimeFormat(i18n.language, { hour: '2-digit', minute: '2-digit', hour12: false });
+            const formattedDate = `${df.format(startDate)} - ${df.format(endDate)}`;
             
             return (
               <div key={game.id} style={{
@@ -121,13 +125,13 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
                 e.currentTarget.style.transform = "none";
                 e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.15)";
               }}
-              title="点击前往 Epic 商城领取"
+              title={t("epicGoToStore")}
               >
                 <div style={{ width: "100%", height: "180px", background: "#0f172a", position: "relative" }}>
                    {game.image_url ? (
                        <img src={game.image_url} alt={game.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                    ) : (
-                       <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", color: "#666" }}>暂无图片</div>
+                       <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", color: "#666" }}>{t("epicNoImage")}</div>
                    )}
                    <div style={{ 
                        position: "absolute", 
@@ -141,7 +145,7 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
                        color: "#fff",
                        boxShadow: "0 2px 4px rgba(0,0,0,0.3)"
                    }}>
-                       {game.status}
+                       {game.status === "现在免费" ? t("epicNowFree") : game.status}
                    </div>
                 </div>
                 <div style={{ padding: "1.25rem", flex: 1, display: "flex", flexDirection: "column" }}>
@@ -151,7 +155,7 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "0.75rem" }}>
                         <Calendar size={14} />
-                        <span>{game.status === "现在免费" ? `当前免费，${endDate.getMonth() + 1}月${endDate.getDate()}日 ${endDate.getHours().toString().padStart(2, '0')}:${endDate.getMinutes().toString().padStart(2, '0')}截止` : `免费 ${formattedDate}`}</span>
+                        <span>{game.status === "现在免费" ? `${t("epicNowFree")}, ${df.format(endDate)} ${tf.format(endDate)} ${t("epicEnd")}` : `${t("epicFree")} ${formattedDate}`}</span>
                     </div>
                     <p style={{ 
                         fontSize: "0.9rem", 

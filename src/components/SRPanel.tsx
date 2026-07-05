@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Terminal, Eye, X, Copy } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { RELEASES } from "../mocks/releaseData";
 
@@ -8,6 +9,7 @@ interface SRPanelProps {
 }
 
 export default function SRPanel({ showToast }: SRPanelProps) {
+  const { t } = useTranslation();
   const [selectedGroup, setSelectedGroup] = useState<string>("ALL");
   const [viewingNfo, setViewingNfo] = useState<string | null>(null);
   const [viewingNfoName, setViewingNfoName] = useState<string>("");
@@ -19,7 +21,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
   const copyNfo = () => {
     if (viewingNfo) {
       navigator.clipboard.writeText(viewingNfo).then(() => {
-        showToast("已成功复制 NFO 文件内容到剪贴板！");
+        showToast(t("srCopySuccess"));
       });
     }
   };
@@ -30,10 +32,10 @@ export default function SRPanel({ showToast }: SRPanelProps) {
         <div>
           <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Terminal size={22} style={{ color: "var(--primary-accent)" }} />
-            S&R 情报站 (Scene & Repacks)
+            {t("srTitle")}
           </h2>
           <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", marginTop: "0.25rem", marginBottom: 0 }}>
-            追踪最新的 Scene 组织发布情报与打包姬（Repack）进度，支持在线查看详细的 NFO 文件。
+            {t("srDesc")}
           </p>
         </div>
 
@@ -65,12 +67,12 @@ export default function SRPanel({ showToast }: SRPanelProps) {
         <table>
           <thead>
             <tr>
-              <th>发布组 / 归档名称</th>
-              <th style={{ width: "120px" }}>类型</th>
-              <th style={{ width: "100px" }}>文件大小</th>
-              <th style={{ width: "120px" }}>发布时间</th>
-              <th style={{ width: "100px" }}>发布小组</th>
-              <th style={{ width: "100px", textAlign: "center" }}>NFO 详情</th>
+              <th>{t("srColName")}</th>
+              <th style={{ width: "120px" }}>{t("srColType")}</th>
+              <th style={{ width: "100px" }}>{t("srColSize")}</th>
+              <th style={{ width: "120px" }}>{t("srColDate")}</th>
+              <th style={{ width: "100px" }}>{t("srColGroup")}</th>
+              <th style={{ width: "100px", textAlign: "center" }}>{t("srColNFO")}</th>
             </tr>
           </thead>
           <tbody>
@@ -94,7 +96,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
                       setViewingNfo(r.nfoContent);
                       setViewingNfoName(r.releaseName);
                     }}
-                    title="查看 NFO 说明文档"
+                    title={t("srViewNFO")}
                     style={{ padding: "0.4rem", display: "inline-flex" }}
                   >
                     <Eye size={12} />
@@ -163,7 +165,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
                   }}
                 >
                   <Copy size={12} />
-                  复制内容
+                  {t("srCopyNFO")}
                 </button>
                 <button 
                   onClick={() => setViewingNfo(null)}

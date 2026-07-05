@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Gamepad2, Calendar, RefreshCw, ExternalLink } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 type SteamFreeGame = {
   id: number;
@@ -13,6 +14,7 @@ type SteamFreeGame = {
 };
 
 export default function SteamGamesPanel({ showToast }: { showToast: (msg: string) => void }) {
+  const { t } = useTranslation();
   const [games, setGames] = useState<SteamFreeGame[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
@@ -34,12 +36,12 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
       const data = await invoke<SteamFreeGame[]>("fetch_steam_free_games_command");
       setGames(data);
       if (data.length === 0) {
-          showToast("目前没有 Steam 喜加一活动");
+          showToast(t("steamNoEvent"));
       } else {
-          showToast("获取 Steam 免费游戏情报成功！");
+          showToast(t("steamSuccess"));
       }
     } catch (err: any) {
-      showToast("获取失败: " + err);
+      showToast(t("steamError") + err);
     } finally {
       setIsLoading(false);
     }
@@ -55,10 +57,10 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
         <div>
           <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Gamepad2 size={22} style={{ color: "var(--primary-accent)" }} />
-            Steam 喜加一情报
+            {t("steamTitle")}
           </h2>
           <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", marginTop: "0.25rem", marginBottom: 0 }}>
-            实时获取 Steam 平台及第三方赠送的免费游戏/DLC活动 (由 GamerPower 提供数据)。
+            {t("steamDesc")}
           </p>
         </div>
         <button 
@@ -76,14 +78,14 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
           }}
         >
           <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
-          {isLoading ? "正在获取..." : "获取Steam信息"}
+          {isLoading ? t("steamBtnFetching") : t("steamBtnFetch")}
         </button>
       </div>
 
       <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap" }}>
         {games.length === 0 && !isLoading && (
             <div style={{ color: "var(--text-secondary)", fontSize: "0.9rem", padding: "2rem", width: "100%", textAlign: "center" }}>
-                目前没有进行中的活动。
+                {t("steamEmpty")}
             </div>
         )}
         
@@ -117,13 +119,13 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
                 e.currentTarget.style.transform = "none";
                 e.currentTarget.style.boxShadow = "0 4px 12px rgba(0,0,0,0.15)";
               }}
-              title="点击前往领取页面"
+              title={t("steamGoToStore")}
             >
                 <div style={{ width: "100%", height: "180px", background: "#0f172a", position: "relative" }}>
                    {game.image_url ? (
                        <img src={game.image_url} alt={game.title} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                    ) : (
-                       <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", color: "#666" }}>暂无图片</div>
+                       <div style={{ display: "flex", height: "100%", alignItems: "center", justifyContent: "center", color: "#666" }}>{t("steamNoImage")}</div>
                    )}
                    <div style={{ 
                        position: "absolute", 
@@ -147,7 +149,7 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "0.75rem" }}>
                         <Calendar size={14} />
-                        <span>截止: {game.end_date === "N/A" || !game.end_date ? "未知" : game.end_date}</span>
+                        <span>{t("steamEnd")} {game.end_date === "N/A" || !game.end_date ? t("steamUnknown") : game.end_date}</span>
                     </div>
                     <p style={{ 
                         fontSize: "0.9rem", 

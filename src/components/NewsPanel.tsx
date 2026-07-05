@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { Radio, Calendar, Clock, ChevronRight, ExternalLink } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { NEWS_DATA } from "../mocks/newsData";
 
 export default function NewsPanel() {
+  const { t } = useTranslation();
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const toggleExpand = (id: number) => {
@@ -26,10 +28,10 @@ export default function NewsPanel() {
       <div className="panel-header" style={{ marginBottom: "1.5rem" }}>
         <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: "0.5rem" }}>
           <Radio size={22} style={{ color: "var(--primary-accent)", animation: "pulse 2s infinite" }} />
-          游戏情报视窗
+          {t("newsTitle")}
         </h2>
         <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", marginTop: "0.25rem", marginBottom: 0 }}>
-          汇聚全球业界动态、打折降价、游戏补丁、Scene 破解与 repack 打包资讯的实时订阅流。
+          {t("newsDesc")}
         </p>
       </div>
 
@@ -64,8 +66,8 @@ export default function NewsPanel() {
                   <Clock size={12} />
                   {item.readTime}
                 </span>
-                <span style={{ marginLeft: "auto", color: "var(--text-secondary)", fontSize: "0.8rem", opacity: 0.7 }}>
-                  来源: {item.source}
+                <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: "0.25rem", color: "var(--text-secondary)", fontSize: "0.8rem" }}>
+                  {t("newsSource")}: {item.source}
                 </span>
               </div>
 
@@ -115,19 +117,12 @@ export default function NewsPanel() {
                   <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "0.75rem" }}>
                     <a 
                       href="#" 
-                      onClick={(e) => { e.preventDefault(); alert("情报源直达: " + item.source); }}
-                      style={{ 
-                        display: "inline-flex", 
-                        alignItems: "center", 
-                        gap: "0.25rem", 
-                        fontSize: "0.75rem", 
-                        color: "var(--primary-accent)", 
-                        textDecoration: "none",
-                        fontWeight: 600
-                      }}
+                      className="action-btn"
+                      style={{ padding: "0.4rem 1rem", fontSize: "0.85rem", height: "auto", display: "inline-flex", alignItems: "center", gap: "0.35rem" }}
+                      onClick={(e) => { e.preventDefault(); alert(t("newsReadOriginal") + ": " + item.source); }}
                     >
-                      查看新闻原文
-                      <ExternalLink size={10} />
+                      {t("newsReadOriginal")}
+                      <ExternalLink size={14} />
                     </a>
                   </div>
                 </div>
