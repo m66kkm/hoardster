@@ -23,6 +23,34 @@ const parseSizeInBytes = (sizeStr: string): number => {
   }
 };
 
+const parse1337xDate = (dateStr: string): number => {
+  if (!dateStr) return 0;
+  const str = dateStr.toLowerCase();
+  const now = Date.now();
+  
+  // Handle relative times: "1 min", "2 hrs", "3 days", "4 weeks"
+  const match = str.match(/^(\d+)\s+(min|hr|hour|day|week|month|year)/);
+  if (match) {
+    const num = parseInt(match[1]);
+    const unit = match[2];
+    if (unit.startsWith("min")) return now - num * 60 * 1000;
+    if (unit.startsWith("hr") || unit.startsWith("hour")) return now - num * 60 * 60 * 1000;
+    if (unit.startsWith("day")) return now - num * 24 * 60 * 60 * 1000;
+    if (unit.startsWith("week")) return now - num * 7 * 24 * 60 * 60 * 1000;
+    if (unit.startsWith("month")) return now - num * 30 * 24 * 60 * 60 * 1000;
+    if (unit.startsWith("year")) return now - num * 365 * 24 * 60 * 60 * 1000;
+  }
+  
+  // Handle absolute times: "8:54pm. Jun. 23rd", "May. 4th '23"
+  let cleanStr = str.replace(/(st|nd|rd|th)\b/g, "").replace(/\./g, "");
+  // Replace '23 with 2023
+  cleanStr = cleanStr.replace(/'(\d{2})/, "20$1");
+  const parsed = Date.parse(cleanStr);
+  if (!isNaN(parsed)) return parsed;
+  
+  return 0; // Fallback
+};
+
 const formatSizeGB = (sizeStr: string): string => {
   const bytes = parseSizeInBytes(sizeStr);
   if (bytes === 0) return "0.0 GB";
@@ -109,9 +137,11 @@ export default function Torrents1337Panel({
   } else if (sortVal === "name-desc") {
     filteredTorrents.sort((a, b) => b.name.localeCompare(a.name));
   } else if (sortVal === "date-asc") {
-    filteredTorrents.reverse();
+    filteredTorrents.sort((a, b) => parse1337xDate(a.date) - parse1337xDate(b.date));
+  } else {
+    // Default sort by date desc
+    filteredTorrents.sort((a, b) => parse1337xDate(b.date) - parse1337xDate(a.date));
   }
-  // If sortVal is "date-desc" or empty, we do NOT sort and just use the array order from DB
 
   // Paginate filtered torrents
   const totalItems = filteredTorrents.length;
