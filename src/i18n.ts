@@ -21,6 +21,30 @@ export const STEAM_LANGUAGES = [
   { code: "latam", name: "Español - Latinoamérica" }
 ];
 
+export const mapSteamLangToBCP47 = (steamLang: string): string => {
+  const map: Record<string, string> = {
+    schinese: "zh-CN",
+    english: "en-US",
+    french: "fr-FR",
+    italian: "it-IT",
+    german: "de-DE",
+    spanish: "es-ES",
+    arabic: "ar-SA",
+    czech: "cs-CZ",
+    hungarian: "hu-HU",
+    japanese: "ja-JP",
+    koreana: "ko-KR",
+    polish: "pl-PL",
+    brazilian: "pt-BR",
+    russian: "ru-RU",
+    tchinese: "zh-TW",
+    turkish: "tr-TR",
+    latam: "es-419",
+  };
+  return map[steamLang] || "en-US";
+};
+
+
 const resources = {
   schinese: {
     translation: {

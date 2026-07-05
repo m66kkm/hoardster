@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Gift, Calendar, RefreshCw, ExternalLink } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { mapSteamLangToBCP47 } from "../i18n";
 
 type EpicGame = {
   id: string;
@@ -91,8 +92,9 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
         {games.map(game => {
             const startDate = new Date(game.start_date);
             const endDate = new Date(game.end_date);
-            const df = new Intl.DateTimeFormat(i18n.language, { month: 'short', day: 'numeric' });
-            const tf = new Intl.DateTimeFormat(i18n.language, { hour: '2-digit', minute: '2-digit', hour12: false });
+            const bcp47Lang = mapSteamLangToBCP47(i18n.language);
+            const df = new Intl.DateTimeFormat(bcp47Lang, { month: 'short', day: 'numeric' });
+            const tf = new Intl.DateTimeFormat(bcp47Lang, { hour: '2-digit', minute: '2-digit', hour12: false });
             const formattedDate = `${df.format(startDate)} - ${df.format(endDate)}`;
             
             return (

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Download, Check, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
+import { mapSteamLangToBCP47 } from "../i18n";
 import type { Torrent1337x } from "../types";
 import SearchBox from "./shared/SearchBox";
 import SortSelect from "./shared/SortSelect";
@@ -13,10 +14,11 @@ const formatPublishDate = (ts: number, originalDate: string, lang: string): stri
   const year = d.getFullYear();
   const currentYear = new Date().getFullYear();
   
+  const bcp47Lang = mapSteamLangToBCP47(lang);
   if (year === currentYear) {
-    return new Intl.DateTimeFormat(lang, { month: 'short', day: 'numeric' }).format(d);
+    return new Intl.DateTimeFormat(bcp47Lang, { month: 'short', day: 'numeric' }).format(d);
   } else {
-    return new Intl.DateTimeFormat(lang, { year: 'numeric', month: 'short' }).format(d);
+    return new Intl.DateTimeFormat(bcp47Lang, { year: 'numeric', month: 'short' }).format(d);
   }
 };
 
