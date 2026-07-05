@@ -1,5 +1,5 @@
-import type { RefObject } from "react";
-import { Plus, Play, RefreshCw } from "lucide-react";
+import { useState, type RefObject } from "react";
+import { Plus, Play, RefreshCw, Trash2 } from "lucide-react";
 import ScanProgress from "./ScanProgress";
 import { useTranslation } from "react-i18next";
 import { STEAM_LANGUAGES } from "../i18n";
@@ -58,6 +58,19 @@ export default function SettingsPanel({
     scrapeMessage: msgSeeders, 
     startScrape: startSeeders 
   } = useScrape({ mode: "seeders" });
+
+  const [isClearing, setIsClearing] = useState(false);
+
+  const handleClear1337xData = async () => {
+    try {
+      setIsClearing(true);
+      await invoke("clear_data_1337x");
+    } catch (e) {
+      console.error("Failed to clear 1337x data:", e);
+    } finally {
+      setIsClearing(false);
+    }
+  };
 
   return (
     <div className="panel" style={{ display: "block" }}>
@@ -239,6 +252,31 @@ export default function SettingsPanel({
                 </p>
               </div>
             )}
+          </div>
+
+          <div className="setting-group" style={{ borderColor: "rgba(239, 68, 68, 0.2)" }}>
+            <div className="setting-header">
+              <div>
+                <h3 className="setting-title" style={{ color: "#ef4444" }}>清空所有 1337x 数据</h3>
+                <p className="setting-desc">清空本地数据库中已缓存的所有 1337x 种子信息。清空后可以重新抓取。</p>
+              </div>
+              <button 
+                className="action-btn" 
+                onClick={handleClear1337xData} 
+                disabled={isClearing || isScrapingLeechers || isScrapingSeeders}
+                style={{ 
+                  height: "36px", 
+                  padding: "0 1rem", 
+                  fontSize: "0.9rem",
+                  backgroundColor: "rgba(239, 68, 68, 0.1)",
+                  color: "#ef4444",
+                  border: "1px solid rgba(239, 68, 68, 0.3)"
+                }}
+              >
+                <Trash2 size={16} className={isClearing ? "animate-spin" : ""} style={{ marginRight: "0.5rem" }} />
+                {isClearing ? "正在清空..." : "清空数据"}
+              </button>
+            </div>
           </div>
         </>
       )}

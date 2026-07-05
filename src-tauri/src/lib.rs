@@ -444,7 +444,7 @@ async fn scrape_1337x_command(
                         Ok(found_existing)
                     }).await.map_err(|e| e.to_string())??;
                     
-                    if has_existing {
+                    if has_existing && mode == "time" {
                         break;
                     }
                 }
@@ -469,6 +469,14 @@ async fn scrape_1337x_command(
 #[tauri::command]
 fn cancel_scrape_command(scrape_state: tauri::State<'_, ScrapeState>) -> Result<(), String> {
     scrape_state.is_cancelled.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_data_1337x() -> Result<(), String> {
+    let db_path = db::get_db_path();
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM torrents_1337x", []).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -552,7 +560,8 @@ pub fn run() {
             epic::fetch_epic_free_games_command,
             epic::get_epic_free_games_command,
             steam_api::fetch_steam_free_games_command,
-            steam_api::get_steam_free_games_command
+            steam_api::get_steam_free_games_command,
+            clear_data_1337x
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");
