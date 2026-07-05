@@ -242,7 +242,7 @@ export default function SettingsPanel({
             )}
           </div>
 
-          <div className="setting-group">
+          <div className="setting-group" style={{ marginBottom: "2rem" }}>
             <div className="setting-header">
               <div>
                 <h3 className="setting-title">{t("intelSeedTitle")}</h3>
