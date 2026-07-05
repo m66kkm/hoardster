@@ -192,17 +192,17 @@ export default function SettingsPanel({
       {activeTab === "intel" && (
         <>
           <h2 style={{ fontSize: "1.1rem", fontWeight: 600, color: "var(--text-primary)", margin: "0 0 1rem 0" }}>
-            1337 额外信息获取
+            {t("intelTitle")}
           </h2>
           <p style={{ color: "var(--text-secondary)", fontSize: "0.9rem", margin: "0 0 2rem 0" }}>
-            获取 1337x 上最多下载和最多做种的游戏数据。
+            {t("intelDesc")}
           </p>
 
           <div className="setting-group" style={{ marginBottom: "2rem" }}>
             <div className="setting-header">
               <div>
-                <h3 className="setting-title">获取最多leecher游戏</h3>
-                <p className="setting-desc">获取下载人数最多的前150页游戏数据，这通常代表当前最热门的游戏。</p>
+                <h3 className="setting-title">{t("intelLeechTitle")}</h3>
+                <p className="setting-desc">{t("intelLeechDesc")}</p>
               </div>
               <button 
                 className="action-btn" 
@@ -211,7 +211,7 @@ export default function SettingsPanel({
                 style={{ height: "36px", padding: "0 1rem", fontSize: "0.9rem" }}
               >
                 <RefreshCw size={16} className={isScrapingLeechers ? "animate-spin" : ""} style={{ marginRight: "0.5rem" }} />
-                {isScrapingLeechers ? "正在更新..." : "获取最新"}
+                {isScrapingLeechers ? t("intelBtnScraping") : t("intelBtnFetch")}
               </button>
             </div>
             {isScrapingLeechers && (
@@ -229,8 +229,8 @@ export default function SettingsPanel({
           <div className="setting-group">
             <div className="setting-header">
               <div>
-                <h3 className="setting-title">获取最多seed游戏</h3>
-                <p className="setting-desc">获取做种人数最多的前150页游戏数据，这通常代表最经典或资源最稳定的游戏。</p>
+                <h3 className="setting-title">{t("intelSeedTitle")}</h3>
+                <p className="setting-desc">{t("intelSeedDesc")}</p>
               </div>
               <button 
                 className="action-btn" 
@@ -239,7 +239,7 @@ export default function SettingsPanel({
                 style={{ height: "36px", padding: "0 1rem", fontSize: "0.9rem" }}
               >
                 <RefreshCw size={16} className={isScrapingSeeders ? "animate-spin" : ""} style={{ marginRight: "0.5rem" }} />
-                {isScrapingSeeders ? "正在更新..." : "获取最新"}
+                {isScrapingSeeders ? t("intelBtnScraping") : t("intelBtnFetch")}
               </button>
             </div>
             {isScrapingSeeders && (
@@ -257,8 +257,8 @@ export default function SettingsPanel({
           <div className="setting-group" style={{ borderColor: "rgba(239, 68, 68, 0.2)" }}>
             <div className="setting-header">
               <div>
-                <h3 className="setting-title" style={{ color: "#ef4444" }}>清空所有 1337x 数据</h3>
-                <p className="setting-desc">清空本地数据库中已缓存的所有 1337x 种子信息。清空后可以重新抓取。</p>
+                <h3 className="setting-title" style={{ color: "#ef4444" }}>{t("intelClearTitle")}</h3>
+                <p className="setting-desc">{t("intelClearDesc")}</p>
               </div>
               <button 
                 className="action-btn" 
@@ -274,7 +274,7 @@ export default function SettingsPanel({
                 }}
               >
                 <Trash2 size={16} className={isClearing ? "animate-spin" : ""} style={{ marginRight: "0.5rem" }} />
-                {isClearing ? "正在清空..." : "清空数据"}
+                {isClearing ? t("intelBtnClearing") : t("intelBtnClear")}
               </button>
             </div>
           </div>
