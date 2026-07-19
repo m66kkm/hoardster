@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Terminal, Copy, RefreshCw, ExternalLink, Flame } from "lucide-react";
+import { Terminal, RefreshCw, Flame } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useScrape } from "../hooks/useScrape";
