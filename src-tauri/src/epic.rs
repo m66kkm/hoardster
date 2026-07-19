@@ -73,18 +73,27 @@ pub fn fetch_and_save_epic_games(conn: &rusqlite::Connection) -> Result<Vec<Epic
                     .and_then(|o| o.as_array())
                     .and_then(|a| a.first()) 
                 {
-                    status = "现在免费".to_string();
-                    start_date = offers.get("startDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    end_date = offers.get("endDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                } 
-                // Check upcoming promotions if no current promotion
-                else if let Some(offers) = promos.pointer("/upcomingPromotionalOffers/0/promotionalOffers")
-                    .and_then(|o| o.as_array())
-                    .and_then(|a| a.first()) 
-                {
-                    status = "即将推出".to_string();
-                    start_date = offers.get("startDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    end_date = offers.get("endDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let discount_pct = offers.pointer("/discountSetting/discountPercentage").and_then(|v| v.as_i64()).unwrap_or(-1);
+                    if discount_pct == 0 {
+                        status = "现在免费".to_string();
+                        start_date = offers.get("startDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        end_date = offers.get("endDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    }
+                }
+                
+                // If not currently free, check upcoming promotions
+                if status.is_empty() {
+                    if let Some(offers) = promos.pointer("/upcomingPromotionalOffers/0/promotionalOffers")
+                        .and_then(|o| o.as_array())
+                        .and_then(|a| a.first()) 
+                    {
+                        let discount_pct = offers.pointer("/discountSetting/discountPercentage").and_then(|v| v.as_i64()).unwrap_or(-1);
+                        if discount_pct == 0 {
+                            status = "即将推出".to_string();
+                            start_date = offers.get("startDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            end_date = offers.get("endDate").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        }
+                    }
                 }
             }
         }

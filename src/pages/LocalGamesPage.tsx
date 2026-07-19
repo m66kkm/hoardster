@@ -79,6 +79,14 @@ export default function LocalGamesPage() {
       .catch(console.error);
   }, [loadScanPaths]);
 
+  // Scroll to top when page or active tab changes
+  useEffect(() => {
+    const scrollContainer = document.querySelector(".tab-content-scrollable");
+    if (scrollContainer) {
+      scrollContainer.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [currentPage, activeTab]);
+
   const tabs: TabDef[] = [
     { id: "all", icon: Database, labelKey: "tabAll" },
     { id: "installed", icon: HardDrive, labelKey: "tabInstalled" },
@@ -180,7 +188,6 @@ export default function LocalGamesPage() {
             currentPage={currentPage} 
             setCurrentPage={setCurrentPage} 
             pageSize={36} 
-            copyPath={copyPath} 
             openGameFolder={openGameFolder} 
           />
         )}

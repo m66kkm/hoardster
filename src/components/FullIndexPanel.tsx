@@ -2,17 +2,17 @@ import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import type { Game } from "../types";
 import { getRatingColorClass, getCoverUrl } from "../utils/helpers";
+import Pagination from "./shared/Pagination";
 
 interface FullIndexPanelProps {
   games: Game[];
   currentPage: number;
   setCurrentPage: (page: number | ((prev: number) => number)) => void;
   pageSize: number;
-  copyPath: (path: string, gameName: string) => void;
   openGameFolder: (path: string) => void;
 }
 
-export default function FullIndexPanel({ games, currentPage, setCurrentPage, pageSize, copyPath, openGameFolder }: FullIndexPanelProps) {
+export default function FullIndexPanel({ games, currentPage, setCurrentPage, pageSize, openGameFolder }: FullIndexPanelProps) {
   const { t } = useTranslation();
 
   const totalItems = games.length;
@@ -71,7 +71,6 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
               <th style={{ width: "160px" }}>{t("colSteamRating")}</th>
               <th style={{ width: "140px" }}>{t("colGenre")}</th>
               <th style={{ width: "80px" }}>{t("colFile")}</th>
-              <th>{t("colPath")}</th>
               <th style={{ width: "150px" }}>{t("colStatus")}</th>
               <th style={{ width: "80px", textAlign: "center" }}>{t("colAction")}</th>
             </tr>
@@ -106,9 +105,6 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                     <span className={`badge ${game.type === "Directory" ? "badge-dir" : "badge-iso"}`}>{game.type}</span>
                   </td>
                   <td>
-                    <span className="code-path" onClick={() => copyPath(game.full_path, game.original_name)} title="Copy Path">{game.full_path}</span>
-                  </td>
-                  <td>
                     {game.is_exact_dup && <span className="badge badge-dup" style={{ marginRight: "0.35rem" }}>{t("tagExactDup")}</span>}
                     {game.is_version_dup && <span className="badge badge-ver">{t("tagVersionDup")}</span>}
                     {!game.is_exact_dup && !game.is_version_dup && <span style={{ color: "var(--text-secondary)", opacity: 0.3 }}>-</span>}
@@ -126,36 +122,13 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
       </div>
 
       {/* Bottom Pagination Controls */}
-      {totalItems > 0 && (
-        <div className="results-info" style={{ marginTop: "1.5rem" }}>
-          <span>{t("paginationInfo", { start: (currentPage - 1) * pageSize + 1, end: Math.min(currentPage * pageSize, totalItems), total: totalItems })}</span>
-          <div className="pagination">
-            <button className="page-btn" onClick={() => setCurrentPage((prev: number) => Math.max(prev - 1, 1))} disabled={currentPage === 1}>
-              {t("btnPrevPage")}
-            </button>
-            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-              let pageNum = currentPage - 2 + i;
-              if (currentPage <= 2) pageNum = i + 1;
-              else if (currentPage >= totalPages - 1) pageNum = totalPages - 4 + i;
-              
-              if (pageNum < 1 || pageNum > totalPages) return null;
-              
-              return (
-                <button
-                  key={pageNum}
-                  className={`page-btn ${pageNum === currentPage ? "active" : ""}`}
-                  onClick={() => setCurrentPage(pageNum)}
-                >
-                  {pageNum}
-                </button>
-              );
-            })}
-            <button className="page-btn" onClick={() => setCurrentPage((prev: number) => Math.min(prev + 1, totalPages))} disabled={currentPage === totalPages}>
-              {t("btnNextPage")}
-            </button>
-          </div>
-        </div>
-      )}
+      <Pagination 
+        currentPage={currentPage}
+        totalPages={totalPages}
+        totalItems={totalItems}
+        pageSize={pageSize}
+        onPageChange={setCurrentPage as (page: number) => void}
+      />
 
       {totalItems === 0 && (
         <div style={{ textAlign: "center", padding: "4rem", color: "var(--text-secondary)", border: "1px dashed var(--panel-border)", borderRadius: "12px" }}>

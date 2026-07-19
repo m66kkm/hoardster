@@ -35,6 +35,7 @@ pub fn fetch_and_save_steam_games(conn: &rusqlite::Connection) -> Result<Vec<Ste
                 end_date,
                 image_url,
                 giveaway_url,
+                status: "活跃".to_string(),
             });
         }
     } else {

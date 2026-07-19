@@ -73,3 +73,15 @@ export interface Torrent1337x {
   uploader_url: string;
   published_ts: number;
 }
+
+export interface TorrentSR {
+  id: string;
+  title: string;
+  url: string;
+  image_url: string;
+  category: string;
+  date: string;
+  fetched_at: string;
+  published_ts: number;
+  comments: number;
+}

@@ -10,11 +10,12 @@ interface ScrapeProgressPayload {
 }
 
 interface UseScrapeOptions {
+  target?: "1337x" | "sr";
   mode?: "latest" | "leechers" | "seeders";
-  onComplete?: () => void;
+  onComplete?: (msg: string) => void;
 }
 
-export function useScrape({ mode = "latest", onComplete }: UseScrapeOptions = {}) {
+export function useScrape({ target = "1337x", mode = "latest", onComplete }: UseScrapeOptions = {}) {
   const [isScraping, setIsScraping] = useState<boolean>(false);
   const [scrapeProgress, setScrapeProgress] = useState<number>(0);
   const [scrapeMessage, setScrapeMessage] = useState<string>("");
@@ -26,14 +27,19 @@ export function useScrape({ mode = "latest", onComplete }: UseScrapeOptions = {}
 
     let unlisten: (() => void) | null = null;
     try {
-      unlisten = await listen<ScrapeProgressPayload>(`scrape-progress-${mode}`, (event) => {
+      let eventPrefix = target === "1337x" ? `scrape-progress-${mode}` : "scrape-progress-sr";
+      unlisten = await listen<ScrapeProgressPayload>(eventPrefix, (event) => {
         const payload = event.payload;
         const progress = Math.round((payload.current_page / (payload.total_pages || 1)) * 100);
         setScrapeProgress(progress);
         setScrapeMessage(payload.message);
       });
 
-      await invoke("scrape_1337x_command", { mode });
+      let cmd = target === "1337x" ? "scrape_1337x_command" : "scrape_sr_command";
+      let args = target === "1337x" ? { mode } : {};
+      
+      const resultMsg = await invoke<string>(cmd, args);
+      onComplete?.(resultMsg);
     } catch (e) {
       console.error("同步发生错误:", e);
       setScrapeMessage(`同步失败: ${e}`);
@@ -42,7 +48,6 @@ export function useScrape({ mode = "latest", onComplete }: UseScrapeOptions = {}
       if (unlisten) {
         unlisten();
       }
-      onComplete?.();
     }
   }, [onComplete]);
 

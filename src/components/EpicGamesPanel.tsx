@@ -22,8 +22,18 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
 
   const sortGames = (gamesArray: EpicGame[]) => {
     return [...gamesArray].sort((a, b) => {
-      if (a.status === "现在免费" && b.status !== "现在免费") return -1;
-      if (a.status !== "现在免费" && b.status === "现在免费") return 1;
+      const statusWeight = (status: string) => {
+        if (status === "现在免费") return 0;
+        if (status === "即将推出") return 1;
+        if (status === "已结束") return 2;
+        return 3;
+      };
+      const weightDiff = statusWeight(a.status) - statusWeight(b.status);
+      if (weightDiff !== 0) return weightDiff;
+      
+      if (a.status === "已结束") {
+        return new Date(b.start_date).getTime() - new Date(a.start_date).getTime();
+      }
       return new Date(a.start_date).getTime() - new Date(b.start_date).getTime();
     });
   };
@@ -97,6 +107,8 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
             const tf = new Intl.DateTimeFormat(bcp47Lang, { hour: '2-digit', minute: '2-digit', hour12: false });
             const formattedDate = `${df.format(startDate)} - ${df.format(endDate)}`;
             
+            const isEnded = game.status === "已结束";
+            
             return (
               <div key={game.id} style={{
                 background: "rgba(15, 23, 42, 0.4)",
@@ -108,7 +120,9 @@ export default function EpicGamesPanel({ showToast }: { showToast: (msg: string)
                 flexDirection: "column",
                 boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
                 transition: "transform 0.2s, box-shadow 0.2s",
-                cursor: "pointer"
+                cursor: "pointer",
+                opacity: isEnded ? 0.6 : 1,
+                filter: isEnded ? "grayscale(80%)" : "none"
               }}
               onClick={() => {
                   if (game.game_url) {

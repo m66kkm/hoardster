@@ -24,7 +24,9 @@ export default function RadarPage() {
     isScraping, scrapeProgress, scrapeMessage, 
     startScrape, cancelScrape 
   } = useScrape({ 
-    // Usually we might reload data, but TorrentsPanel manages its own query
+    onComplete: (msg) => {
+      if (msg) showToast(msg);
+    }
   });
 
   const tabs: TabDef[] = [

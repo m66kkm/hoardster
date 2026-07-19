@@ -354,7 +354,7 @@ async fn scrape_1337x_command(
     mode: String,
     app_handle: tauri::AppHandle,
     scrape_state: tauri::State<'_, ScrapeState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     use tauri::Emitter;
     use tokio::time::{sleep, Duration};
     use std::process::Command;
@@ -364,7 +364,20 @@ async fn scrape_1337x_command(
 
     let total_pages = 150;
     let mut page = 1;
+    let mut total_new_added = 0;
     let session_time = chrono::Utc::now().to_rfc3339();
+
+    let concurrency = {
+        let db_path = db::get_db_path();
+        if let Ok(conn) = Connection::open(db_path) {
+            let threads_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_threads'", [], |r| r.get(0)).unwrap_or_else(|_| "5".to_string());
+            threads_str.parse::<u32>().unwrap_or(5).max(1).min(20)
+        } else {
+            5
+        }
+    };
+
+    let mut consecutive_existing = 0;
 
     while page <= total_pages {
         let event_name = format!("scrape-progress-{}", mode);
@@ -375,102 +388,119 @@ async fn scrape_1337x_command(
                 message: "抓取任务已被用户取消".to_string(),
                 status: "error".to_string(),
             });
-            return Ok(());
+            return Ok("抓取任务已被用户取消".to_string());
         }
 
+        let end_page = (page + concurrency - 1).min(total_pages);
         let _ = app_handle.emit(&event_name, ScrapeProgress {
-            current_page: page,
+            current_page: end_page,
             total_pages,
-            message: format!("正在获取第 {}/{} 页种子列表...", page, total_pages),
+            message: format!("并发获取第 {} - {} 页种子...", page, end_page),
             status: "fetching".to_string(),
         });
 
-        let url = match mode.as_str() {
-            "leechers" => format!("https://www.1337xx.to/sort-cat/Games/leechers/desc/{}/", page),
-            "seeders" => format!("https://www.1337xx.to/sort-cat/Games/seeders/desc/{}/", page),
-            _ => format!("https://www.1337xx.to/sort-cat/Games/time/desc/{}/", page),
-        };
-        
-        #[cfg(target_os = "windows")]
-        use std::os::windows::process::CommandExt;
+        let mut handles = Vec::new();
+        for p in page..=end_page {
+            let url = match mode.as_str() {
+                "leechers" => format!("https://www.1337xx.to/sort-cat/Games/leechers/desc/{}/", p),
+                "seeders" => format!("https://www.1337xx.to/sort-cat/Games/seeders/desc/{}/", p),
+                _ => format!("https://www.1337xx.to/sort-cat/Games/time/desc/{}/", p),
+            };
+            
+            let handle = tokio::task::spawn_blocking(move || {
+                #[cfg(target_os = "windows")]
+                use std::os::windows::process::CommandExt;
+                let mut cmd = Command::new("curl");
+                cmd.args([
+                    "-s",
+                    "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    &url
+                ]);
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000);
 
-        let mut cmd = Command::new("curl");
-        cmd.args([
-            "-s",
-            "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            &url
-        ]);
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-
-        let output = cmd.output();
-
-        if let Ok(out) = output {
-            if out.status.success() {
-                let html = String::from_utf8_lossy(&out.stdout).to_string();
-                let parsed = parse_page_html(&html);
-                if !parsed.is_empty() {
-                    let db_path = db::get_db_path();
-                    let session_time_clone = session_time.clone();
-                    let has_existing = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-                        let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
-                        let mut found_existing = false;
-                        if let Ok(tx) = conn.transaction() {
-                            for t in parsed {
-                                let exists: bool = tx.query_row(
-                                    "SELECT EXISTS(SELECT 1 FROM torrents_1337x WHERE torrent_id = ?)",
-                                    params![t.torrent_id],
-                                    |row| row.get(0),
-                                ).unwrap_or(false);
-                                
-                                if exists {
-                                    found_existing = true;
-                                }
-                                
-                                let _ = tx.execute(
-                                    "INSERT OR IGNORE INTO torrents_1337x (
-                                        torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, fetched_at, published_ts
-                                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                    params![
-                                        t.torrent_id,
-                                        t.name,
-                                        t.url,
-                                        t.seeds,
-                                        t.leeches,
-                                        t.date,
-                                        t.size,
-                                        t.uploader,
-                                        t.uploader_url,
-                                        &session_time_clone,
-                                        t.published_ts,
-                                    ],
-                                );
-                            }
-                            let _ = tx.commit();
-                        }
-                        Ok(found_existing)
-                    }).await.map_err(|e| e.to_string())??;
-                    
-                    if has_existing && mode == "time" {
-                        break;
+                if let Ok(out) = cmd.output() {
+                    if out.status.success() {
+                        let html = String::from_utf8_lossy(&out.stdout).to_string();
+                        return parse_page_html(&html);
                     }
                 }
+                Vec::new()
+            });
+            handles.push(handle);
+        }
+
+        let mut all_parsed = Vec::new();
+        for h in handles {
+            if let Ok(parsed) = h.await {
+                all_parsed.extend(parsed);
             }
         }
 
-        page += 1;
+        if !all_parsed.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            all_parsed.retain(|t| seen.insert(t.torrent_id.clone()));
+
+            let db_path = db::get_db_path();
+            let session_time_clone = session_time.clone();
+            let (new_consecutive, new_added) = tokio::task::spawn_blocking(move || -> Result<(usize, usize), String> {
+                let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+                let mut local_consecutive = consecutive_existing;
+                let mut newly_added = 0;
+                
+                if let Ok(tx) = conn.transaction() {
+                    for t in all_parsed {
+                        let exists: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM torrents_1337x WHERE torrent_id = ?)",
+                            params![t.torrent_id],
+                            |row| row.get(0),
+                        ).unwrap_or(false);
+                        
+                        if exists {
+                            local_consecutive += 1;
+                        } else {
+                            local_consecutive = 0;
+                        }
+                        
+                        let rows_affected = tx.execute(
+                            "INSERT OR IGNORE INTO torrents_1337x (
+                                torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, fetched_at, published_ts
+                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            params![
+                                t.torrent_id,
+                                t.name,
+                                t.url,
+                                t.seeds,
+                                t.leeches,
+                                t.date,
+                                t.size,
+                                t.uploader,
+                                t.uploader_url,
+                                &session_time_clone,
+                                t.published_ts,
+                            ],
+                        ).unwrap_or(0);
+                        
+                        newly_added += rows_affected as usize;
+                    }
+                    let _ = tx.commit();
+                }
+                Ok((local_consecutive, newly_added))
+            }).await.map_err(|e| e.to_string())??;
+            
+            consecutive_existing = new_consecutive;
+            total_new_added += new_added;
+            
+            if consecutive_existing >= 5 && (mode == "time" || mode == "latest") {
+                break;
+            }
+        }
+
+        page = end_page + 1;
         sleep(Duration::from_millis(200)).await;
     }
 
-    let event_name = format!("scrape-progress-{}", mode);
-    let _ = app_handle.emit(&event_name, ScrapeProgress {
-        current_page: total_pages,
-        total_pages,
-        message: "更新完成！1337x 数据已成功同步至本地。".to_string(),
-        status: "complete".to_string(),
-    });
-
-    Ok(())
+    Ok(format!("更新完成！本次同步新增了 {} 个游戏种子。", total_new_added))
 }
 
 #[tauri::command]
@@ -479,11 +509,246 @@ fn cancel_scrape_command(scrape_state: tauri::State<'_, ScrapeState>) -> Result<
     Ok(())
 }
 
+fn parse_sr_date(date_str: &str) -> i64 {
+    let now = chrono::Utc::now().timestamp();
+    if let Ok(dt) = chrono::NaiveDate::parse_from_str(date_str, "%B %d, %Y") {
+        if let Some(datetime) = dt.and_hms_opt(0, 0, 0) {
+            return datetime.and_utc().timestamp();
+        }
+    }
+    now
+}
+
+fn parse_sr_html(html: &str) -> Vec<db::TorrentSR> {
+    let mut torrents = Vec::new();
+    let block_regex = Regex::new(r"(?s)<div class=.post (.*?)</div><!--End post-->").unwrap();
+    let title_url_regex = Regex::new(r#"<h2><a href="([^"]+)">([^<]+)</a></h2>"#).unwrap();
+    let meta_regex = Regex::new(r"(?s)Posted\s+(.*?)\s+in\s+(.*?)\s*</div>").unwrap();
+    let img_regex = Regex::new(r#"<img[^>]*src="([^"]+)""#).unwrap();
+    let cat_regex = Regex::new(r#"<a[^>]*>([^<]+)</a>"#).unwrap();
+    let comments_regex = Regex::new(r#"class="comments-link"[^>]*>(\d+)\s+Comment"#).unwrap();
+    
+    let now_str = chrono::Utc::now().to_rfc3339();
+
+    for cap in block_regex.captures_iter(html) {
+        let block = &cap[1];
+        
+        let mut url = String::new();
+        let mut title = String::new();
+        if let Some(tu) = title_url_regex.captures(block) {
+            url = tu[1].to_string();
+            title = decode_simple_entities(&tu[2]);
+        }
+        
+        if url.is_empty() || title.is_empty() {
+            continue;
+        }
+        
+        let id = url.clone();
+        
+        let mut date_str = String::new();
+        let mut cats = Vec::new();
+        if let Some(m) = meta_regex.captures(block) {
+            date_str = m[1].trim().to_string();
+            let cat_html = &m[2];
+            for c in cat_regex.captures_iter(cat_html) {
+                let cat_name = decode_simple_entities(&c[1]);
+                let lower_cat = cat_name.to_lowercase();
+                if !lower_cat.contains("request accepted") && !lower_cat.contains("pc games") {
+                    cats.push(cat_name);
+                }
+            }
+        }
+        
+        let mut image_url = String::new();
+        if let Some(i) = img_regex.captures(block) {
+            image_url = i[1].to_string();
+        }
+        
+        let published_ts = parse_sr_date(&date_str);
+        
+        let mut comments = 0;
+        if let Some(c) = comments_regex.captures(block) {
+            comments = c[1].parse::<i32>().unwrap_or(0);
+        }
+
+        torrents.push(db::TorrentSR {
+            id,
+            title,
+            url,
+            image_url,
+            category: cats.join(", "),
+            date: date_str,
+            fetched_at: now_str.clone(),
+            published_ts,
+            comments,
+        });
+    }
+    torrents
+}
+
+#[tauri::command]
+fn get_torrents_sr_command(state: tauri::State<'_, db::DbState>) -> Result<Vec<db::TorrentSR>, String> {
+    let conn = state.0.lock().unwrap();
+    db::get_torrents_sr(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn scrape_sr_command(
+    app_handle: tauri::AppHandle,
+    scrape_state: tauri::State<'_, ScrapeState>,
+) -> Result<String, String> {
+    use tauri::Emitter;
+    use tokio::time::{sleep, Duration};
+    use std::process::Command;
+
+    let cancel_flag = scrape_state.is_cancelled.clone();
+    cancel_flag.store(false, Ordering::Relaxed);
+
+    let total_pages = 150;
+    let mut current_page = 1;
+    let mut total_new_added = 0;
+
+    let concurrency = {
+        let db_path = db::get_db_path();
+        if let Ok(conn) = Connection::open(db_path) {
+            let threads_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_threads'", [], |r| r.get(0)).unwrap_or_else(|_| "5".to_string());
+            threads_str.parse::<u32>().unwrap_or(5).max(1).min(20)
+        } else {
+            5
+        }
+    };
+
+    let mut consecutive_existing = 0;
+
+    while current_page <= total_pages {
+        let event_name = "scrape-progress-sr";
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = app_handle.emit(event_name, ScrapeProgress {
+                current_page: current_page - 1,
+                total_pages,
+                message: "抓取任务已被用户取消".to_string(),
+                status: "error".to_string(),
+            });
+            return Ok("抓取任务已被用户取消".to_string());
+        }
+
+        let end_page = (current_page + concurrency - 1).min(total_pages);
+        let _ = app_handle.emit(event_name, ScrapeProgress {
+            current_page: end_page,
+            total_pages,
+            message: format!("并发获取 Skidrow/Reloaded 第 {} - {} 页数据...", current_page, end_page),
+            status: "fetching".to_string(),
+        });
+
+        let mut handles = Vec::new();
+        for p in current_page..=end_page {
+            let url = if p == 1 {
+                "https://www.skidrowreloaded.com/".to_string()
+            } else {
+                format!("https://www.skidrowreloaded.com/page/{}/", p)
+            };
+            
+            let handle = tokio::task::spawn_blocking(move || {
+                #[cfg(target_os = "windows")]
+                use std::os::windows::process::CommandExt;
+
+                let mut cmd = Command::new("curl");
+                cmd.args([
+                    "-s",
+                    "-A", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    &url
+                ]);
+                #[cfg(target_os = "windows")]
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+
+                if let Ok(out) = cmd.output() {
+                    if out.status.success() {
+                        let html = String::from_utf8_lossy(&out.stdout).to_string();
+                        return parse_sr_html(&html);
+                    }
+                }
+                Vec::new()
+            });
+            handles.push(handle);
+        }
+
+        let mut all_parsed = Vec::new();
+        for h in handles {
+            if let Ok(parsed) = h.await {
+                all_parsed.extend(parsed);
+            }
+        }
+
+        if !all_parsed.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            all_parsed.retain(|t| seen.insert(t.id.clone()));
+
+            let db_path = db::get_db_path();
+            let (new_consecutive, new_added) = tokio::task::spawn_blocking(move || -> Result<(usize, usize), String> {
+                let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+                let mut local_consecutive = consecutive_existing;
+                let mut newly_added = 0;
+                
+                if let Ok(tx) = conn.transaction() {
+                    for t in all_parsed {
+                        let exists: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM skidrow_reloaded WHERE id = ?)",
+                            params![t.id],
+                            |row| row.get(0),
+                        ).unwrap_or(false);
+                        
+                        if exists {
+                            local_consecutive += 1;
+                        } else {
+                            local_consecutive = 0;
+                        }
+                        
+                        let rows_affected = tx.execute(
+                            "INSERT INTO skidrow_reloaded (id, title, url, image_url, category, date, published_ts, comments) 
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) 
+                             ON CONFLICT(id) DO UPDATE SET 
+                                title = ?2, url = ?3, image_url = ?4, category = ?5, date = ?6, published_ts = ?7, comments = ?8",
+                            params![t.id, t.title, t.url, t.image_url, t.category, t.date, t.published_ts, t.comments],
+                        ).unwrap_or(0);
+                        
+                        if rows_affected > 0 && !exists {
+                            newly_added += 1;
+                        }
+                    }
+                    let _ = tx.commit();
+                }
+                Ok((local_consecutive, newly_added))
+            }).await.map_err(|e| e.to_string())??;
+            
+            consecutive_existing = new_consecutive;
+            total_new_added += new_added;
+            
+            if consecutive_existing >= 5 {
+                break;
+            }
+        }
+
+        current_page = end_page + 1;
+        sleep(Duration::from_millis(200)).await;
+    }
+
+    Ok(format!("更新完成！本次同步新增了 {} 个 Skidrow/Reloaded 游戏发布。", total_new_added))
+}
+
 #[tauri::command]
 fn clear_data_1337x() -> Result<(), String> {
     let db_path = db::get_db_path();
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM torrents_1337x", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_data_sr() -> Result<(), String> {
+    let db_path = db::get_db_path();
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM skidrow_reloaded", []).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -568,6 +833,9 @@ pub fn run() {
             epic::get_epic_free_games_command,
             steam_api::fetch_steam_free_games_command,
             steam_api::get_steam_free_games_command,
+            get_torrents_sr_command,
+            scrape_sr_command,
+            clear_data_sr,
             clear_data_1337x
         ])
         .run(tauri::generate_context!())

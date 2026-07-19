@@ -61,6 +61,7 @@ export default function SettingsPanel({
   } = useScrape({ mode: "seeders" });
 
   const [isClearing, setIsClearing] = useState(false);
+  const [isClearingSR, setIsClearingSR] = useState(false);
 
   const handleClear1337xData = async () => {
     const confirmed = await ask(t("confirmClearDataDesc") || "Are you sure you want to clear the 1337x database?", {
@@ -85,6 +86,32 @@ export default function SettingsPanel({
       });
     } finally {
       setIsClearing(false);
+    }
+  };
+
+  const handleClearSRData = async () => {
+    const confirmed = await ask(t("srConfirmClearDataDesc") || "Are you sure you want to clear the Skidrow/Reloaded database?", {
+      title: t("confirmClearDataTitle") || "Confirm Clear Data",
+      kind: "warning",
+    });
+    
+    if (!confirmed) return;
+
+    try {
+      setIsClearingSR(true);
+      await invoke("clear_data_sr");
+      await message(t("srClearDataSuccessDesc") || "The database has been successfully cleared.", {
+        title: t("clearDataSuccessTitle") || "Clear Data Success",
+        kind: "info",
+      });
+    } catch (e) {
+      console.error("Failed to clear SR data:", e);
+      await message("Failed to clear database.", {
+        title: "Error",
+        kind: "error",
+      });
+    } finally {
+      setIsClearingSR(false);
     }
   };
 
@@ -291,6 +318,31 @@ export default function SettingsPanel({
               >
                 <Trash2 size={16} className={isClearing ? "animate-spin" : ""} style={{ marginRight: "0.5rem" }} />
                 {isClearing ? t("intelBtnClearing") : t("intelBtnClear")}
+              </button>
+            </div>
+          </div>
+
+          <div className="setting-group" style={{ borderColor: "rgba(239, 68, 68, 0.2)", marginTop: "1rem" }}>
+            <div className="setting-header">
+              <div>
+                <h3 className="setting-title" style={{ color: "#ef4444" }}>{t("srClearTitle") || "清空所有 Skidrow/Reloaded 数据"}</h3>
+                <p className="setting-desc">{t("srClearDesc") || "清空本地数据库中已缓存的所有 Skidrow/Reloaded 列表信息。清空后可以重新抓取。"}</p>
+              </div>
+              <button 
+                className="action-btn" 
+                onClick={handleClearSRData} 
+                disabled={isClearingSR}
+                style={{ 
+                  height: "36px", 
+                  padding: "0 1rem", 
+                  fontSize: "0.9rem",
+                  backgroundColor: "rgba(239, 68, 68, 0.1)",
+                  color: "#ef4444",
+                  border: "1px solid rgba(239, 68, 68, 0.3)"
+                }}
+              >
+                <Trash2 size={16} className={isClearingSR ? "animate-spin" : ""} style={{ marginRight: "0.5rem" }} />
+                {isClearingSR ? t("intelBtnClearing") : t("intelBtnClear")}
               </button>
             </div>
           </div>

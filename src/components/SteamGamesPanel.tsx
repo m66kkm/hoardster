@@ -11,6 +11,7 @@ type SteamFreeGame = {
   end_date: string;
   image_url: string;
   giveaway_url: string;
+  status: string;
 };
 
 export default function SteamGamesPanel({ showToast }: { showToast: (msg: string) => void }) {
@@ -18,10 +19,18 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
   const [games, setGames] = useState<SteamFreeGame[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
+  const sortGames = (gamesArray: SteamFreeGame[]) => {
+    return [...gamesArray].sort((a, b) => {
+      if (a.status === "活跃" && b.status !== "活跃") return -1;
+      if (a.status !== "活跃" && b.status === "活跃") return 1;
+      return 0;
+    });
+  };
+
   const loadGames = async () => {
     try {
       const data = await invoke<SteamFreeGame[]>("get_steam_free_games_command");
-      setGames(data);
+      setGames(sortGames(data));
       if (data.length === 0) {
         fetchGames();
       }
@@ -34,7 +43,7 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
     setIsLoading(true);
     try {
       const data = await invoke<SteamFreeGame[]>("fetch_steam_free_games_command");
-      setGames(data);
+      setGames(sortGames(data));
       if (data.length === 0) {
           showToast(t("steamNoEvent"));
       } else {
@@ -89,7 +98,10 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
             </div>
         )}
         
-        {games.map(game => (
+        {games.map(game => {
+            const isEnded = game.status === "已结束";
+
+            return (
             <div key={game.id} style={{
                 background: "rgba(15, 23, 42, 0.4)",
                 border: "1px solid var(--panel-border)",
@@ -100,7 +112,9 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
                 flexDirection: "column",
                 boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
                 transition: "transform 0.2s, box-shadow 0.2s",
-                cursor: "pointer"
+                cursor: "pointer",
+                opacity: isEnded ? 0.6 : 1,
+                filter: isEnded ? "grayscale(80%)" : "none"
               }}
               onClick={() => {
                   if (game.giveaway_url) {
@@ -135,11 +149,11 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
                        borderRadius: "6px",
                        fontSize: "0.85rem",
                        fontWeight: "bold",
-                       background: "rgba(0, 120, 215, 0.9)",
+                       background: isEnded ? "rgba(100, 100, 100, 0.9)" : "rgba(0, 120, 215, 0.9)",
                        color: "#fff",
                        boxShadow: "0 2px 4px rgba(0,0,0,0.3)"
                    }}>
-                       {game.type}
+                       {isEnded ? "已结束" : game.type}
                    </div>
                 </div>
                 <div style={{ padding: "1.25rem", flex: 1, display: "flex", flexDirection: "column" }}>
@@ -165,7 +179,7 @@ export default function SteamGamesPanel({ showToast }: { showToast: (msg: string
                     </p>
                 </div>
             </div>
-        ))}
+        )})}
       </div>
     </div>
   );

@@ -67,6 +67,7 @@ pub struct SteamFreeGame {
     pub end_date: String,
     pub image_url: String,
     pub giveaway_url: String,
+    pub status: String,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -242,10 +243,33 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             type TEXT,
             end_date TEXT,
             image_url TEXT,
-            giveaway_url TEXT
+            giveaway_url TEXT,
+            status TEXT DEFAULT '活跃'
         )",
         [],
     )?;
+
+    // 9. Skidrow & Reloaded
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS skidrow_reloaded (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            url TEXT,
+            image_url TEXT,
+            category TEXT,
+            date TEXT,
+            fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            published_ts INTEGER DEFAULT 0,
+            comments INTEGER DEFAULT 0
+        )",
+        [],
+    )?;
+
+    // Add comments column if not exists
+    conn.execute("ALTER TABLE skidrow_reloaded ADD COLUMN comments INTEGER DEFAULT 0", []).ok();
+
+    // Add status column if not exists (for existing databases)
+    conn.execute("ALTER TABLE steam_free_games ADD COLUMN status TEXT DEFAULT '活跃'", []).ok();
 
     // 初始化默认配置项（仅在对应 key 不存在时插入）
     let default_configs = vec![
@@ -870,24 +894,30 @@ pub fn insert_scan_history(
 }
 
 pub fn save_epic_free_games(conn: &Connection, games: &[EpicFreeGame]) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "INSERT OR REPLACE INTO epic_free_games (id, title, description, status, start_date, end_date, image_url, game_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-    )?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE epic_free_games SET status = '已结束' WHERE status != '已结束'", [])?;
 
-    for g in games {
-        stmt.execute(params![
-            g.id,
-            g.title,
-            g.description,
-            g.status,
-            g.start_date,
-            g.end_date,
-            g.image_url,
-            g.game_url
-        ])?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR REPLACE INTO epic_free_games (id, title, description, status, start_date, end_date, image_url, game_url)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )?;
+
+        for g in games {
+            stmt.execute(params![
+                g.id,
+                g.title,
+                g.description,
+                g.status,
+                g.start_date,
+                g.end_date,
+                g.image_url,
+                g.game_url
+            ])?;
+        }
     }
     
+    tx.commit()?;
     Ok(())
 }
 
@@ -914,28 +944,35 @@ pub fn get_epic_free_games(conn: &Connection) -> Result<Vec<EpicFreeGame>> {
 }
 
 pub fn save_steam_free_games(conn: &Connection, games: &[SteamFreeGame]) -> Result<()> {
-    let mut stmt = conn.prepare(
-        "INSERT OR REPLACE INTO steam_free_games (id, title, description, type, end_date, image_url, giveaway_url)
-         VALUES (?, ?, ?, ?, ?, ?, ?)"
-    )?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE steam_free_games SET status = '已结束' WHERE status != '已结束'", [])?;
 
-    for g in games {
-        stmt.execute(params![
-            g.id,
-            g.title,
-            g.description,
-            g.r#type,
-            g.end_date,
-            g.image_url,
-            g.giveaway_url
-        ])?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT OR REPLACE INTO steam_free_games (id, title, description, type, end_date, image_url, giveaway_url, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )?;
+
+        for g in games {
+            stmt.execute(params![
+                g.id,
+                g.title,
+                g.description,
+                g.r#type,
+                g.end_date,
+                g.image_url,
+                g.giveaway_url,
+                g.status
+            ])?;
+        }
     }
     
+    tx.commit()?;
     Ok(())
 }
 
 pub fn get_steam_free_games(conn: &Connection) -> Result<Vec<SteamFreeGame>> {
-    let mut stmt = conn.prepare("SELECT id, title, description, type, end_date, image_url, giveaway_url FROM steam_free_games")?;
+    let mut stmt = conn.prepare("SELECT id, title, description, type, end_date, image_url, giveaway_url, status FROM steam_free_games")?;
     let rows = stmt.query_map([], |row| {
         Ok(SteamFreeGame {
             id: row.get(0)?,
@@ -945,6 +982,7 @@ pub fn get_steam_free_games(conn: &Connection) -> Result<Vec<SteamFreeGame>> {
             end_date: row.get(4)?,
             image_url: row.get(5)?,
             giveaway_url: row.get(6)?,
+            status: row.get(7)?,
         })
     })?;
 
@@ -1033,4 +1071,47 @@ pub fn get_db_path() -> std::path::PathBuf {
     exe_path.pop(); // 移除 exe 文件名，保留目录
     exe_path.push("games.db");
     exe_path
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+/// TorrentSR represents a record from the skidrow_reloaded table
+pub struct TorrentSR {
+    pub id: String,
+    pub title: String,
+    pub url: String,
+    pub image_url: String,
+    pub category: String,
+    pub date: String,
+    pub fetched_at: String,
+    pub published_ts: i64,
+    pub comments: i32,
+}
+
+/// Fetches records from the skidrow_reloaded table
+pub fn get_torrents_sr(conn: &Connection) -> Result<Vec<TorrentSR>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, url, image_url, category, date, fetched_at, published_ts, comments
+         FROM skidrow_reloaded 
+         ORDER BY published_ts DESC"
+    )?;
+    
+    let iter = stmt.query_map([], |row| {
+        Ok(TorrentSR {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            url: row.get(2)?,
+            image_url: row.get(3).unwrap_or_default(),
+            category: row.get(4).unwrap_or_default(),
+            date: row.get(5).unwrap_or_default(),
+            fetched_at: row.get(6)?,
+            published_ts: row.get(7).unwrap_or(0),
+            comments: row.get(8).unwrap_or(0),
+        })
+    })?;
+
+    let mut list = Vec::new();
+    for item in iter {
+        list.push(item?);
+    }
+    Ok(list)
 }

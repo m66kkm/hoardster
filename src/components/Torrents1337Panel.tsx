@@ -6,7 +6,7 @@ import { mapSteamLangToBCP47 } from "../i18n";
 import type { Torrent1337x } from "../types";
 import SearchBox from "./shared/SearchBox";
 import SortSelect from "./shared/SortSelect";
-
+import Pagination from "./shared/Pagination";
 
 const formatPublishDate = (ts: number, originalDate: string, lang: string): string => {
   if (!ts) return originalDate; // Fallback for old data with published_ts = 0
@@ -78,22 +78,28 @@ export default function Torrents1337Panel({
   const [currentPage, setCurrentPage] = useState<number>(1);
   const pageSize = 50;
 
+  // Scroll to top when page changes
   useEffect(() => {
-    if (!isScraping) {
-      invoke<Torrent1337x[]>("get_torrents_1337x_command")
-        .then((data) => {
-          if (data) {
-            setTorrents(data);
-          } else {
-            setTorrents([]);
-          }
-        })
-        .catch((err) => {
-          console.error("加载种子列表失败:", err);
-          setTorrents([]);
-        });
+    const scrollContainer = document.querySelector(".tab-content-scrollable");
+    if (scrollContainer) {
+      scrollContainer.scrollTo({ top: 0, behavior: "smooth" });
     }
-  }, [isScraping]);
+  }, [currentPage]);
+
+  const loadData = () => {
+    invoke<Torrent1337x[]>("get_torrents_1337x_command")
+      .then((data) => {
+        setTorrents(data || []);
+      })
+      .catch((err) => {
+        console.error("加载种子列表失败:", err);
+        setTorrents([]);
+      });
+  };
+
+  useEffect(() => {
+    loadData();
+  }, [isScraping, scrapeProgress]);
 
   // Reset page when filters change
   useEffect(() => {
@@ -140,7 +146,6 @@ export default function Torrents1337Panel({
 
   const sortOptions = [
     { value: "date-asc", label: t("t1337SortDateAsc") },
-    { value: "date-desc", label: t("t1337SortDateDesc") },
     { value: "seeds-desc", label: t("t1337SortSeedsDesc") },
     { value: "seeds-asc", label: t("t1337SortSeedsAsc") },
     { value: "leeches-desc", label: t("t1337SortLeechesDesc") },
@@ -275,7 +280,6 @@ export default function Torrents1337Panel({
               <th style={{ width: "90px", color: "#10b981" }}>{t("t1337ColSeeds")}</th>
               <th style={{ width: "90px", color: "#ef4444" }}>{t("t1337ColLeeches")}</th>
               <th style={{ width: "120px" }}>{t("t1337ColDate")}</th>
-              <th style={{ width: "100px" }}>{t("t1337ColUploader")}</th>
               <th style={{ width: "120px", textAlign: "center" }}>{t("t1337ColActions")}</th>
             </tr>
           </thead>
@@ -284,12 +288,18 @@ export default function Torrents1337Panel({
               const uniqueKey = torrent.torrent_id || torrent.name;
               return (
                 <tr key={uniqueKey}>
-                  <td style={{ fontWeight: 600 }}>
+                  <td style={{ 
+                    fontWeight: 600,
+                    maxWidth: "400px",
+                    whiteSpace: "normal",
+                    wordBreak: "break-all",
+                    lineHeight: "1.4"
+                  }}>
                     <a 
                       href="#" 
                       onClick={(e) => { e.preventDefault(); handleOpenUrl(torrent.url); }}
                       style={{ color: "var(--text-primary)", textDecoration: "none", borderBottom: "1px dashed var(--primary-accent)" }}
-                      title={t("t1337TipOpenPage")}
+                      title={torrent.name}
                     >
                       {torrent.name}
                     </a>
@@ -298,17 +308,6 @@ export default function Torrents1337Panel({
                   <td style={{ color: "#10b981", fontWeight: 600 }}>{torrent.seeds.toLocaleString()}</td>
                   <td style={{ color: "#ef4444", fontWeight: 600 }}>{torrent.leeches.toLocaleString()}</td>
                   <td style={{ color: "var(--text-secondary)" }}>{formatPublishDate(torrent.published_ts, torrent.date, i18n.language)}</td>
-                  <td>
-                    <a 
-                      href="#" 
-                      onClick={(e) => { e.preventDefault(); handleOpenUrl(torrent.uploader_url); }}
-                      className="badge badge-dir"
-                      style={{ textDecoration: "none", cursor: "pointer" }}
-                      title={t("t1337TipUploader")}
-                    >
-                      {torrent.uploader}
-                    </a>
-                  </td>
                   <td style={{ textAlign: "center" }}>
                     <div style={{ display: "flex", gap: "0.35rem", justifyContent: "center" }}>
                       <button 
@@ -334,7 +333,7 @@ export default function Torrents1337Panel({
             })}
             {filteredTorrents.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ textAlign: "center", padding: "3rem", color: "var(--text-secondary)" }}>
+                <td colSpan={6} style={{ textAlign: "center", padding: "3rem", color: "var(--text-secondary)" }}>
                   {t("t1337Empty")}
                 </td>
               </tr>
@@ -343,48 +342,13 @@ export default function Torrents1337Panel({
         </table>
       </div>
 
-      {totalPages > 1 && (
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "1.5rem" }}>
-          <span style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-            {t("paginationInfo", { 
-              start: (currentPage - 1) * pageSize + 1, 
-              end: Math.min(currentPage * pageSize, totalItems), 
-              total: totalItems 
-            }) || `显示第 ${(currentPage - 1) * pageSize + 1} 至 ${Math.min(currentPage * pageSize, totalItems)} 条，共 ${totalItems} 条`}
-          </span>
-          <div style={{ display: "flex", gap: "0.35rem" }}>
-            <button 
-              className="page-btn" 
-              onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))} 
-              disabled={currentPage === 1}
-            >
-              {t("btnPrevPage") || "上一页"}
-            </button>
-            {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-              let pageNum = currentPage - 2 + i;
-              if (currentPage <= 2) pageNum = i + 1;
-              else if (currentPage >= totalPages - 1) pageNum = totalPages - 4 + i;
-              if (pageNum < 1 || pageNum > totalPages) return null;
-              return (
-                <button
-                  key={pageNum}
-                  className={`page-btn ${pageNum === currentPage ? "active" : ""}`}
-                  onClick={() => setCurrentPage(pageNum)}
-                >
-                  {pageNum}
-                </button>
-              );
-            })}
-            <button 
-              className="page-btn" 
-              onClick={() => setCurrentPage((prev) => Math.min(prev + 1, totalPages))} 
-              disabled={currentPage === totalPages}
-            >
-              {t("btnNextPage") || "下一页"}
-            </button>
-          </div>
-        </div>
-      )}
+      <Pagination 
+        currentPage={currentPage}
+        totalPages={totalPages}
+        totalItems={totalItems}
+        pageSize={pageSize}
+        onPageChange={setCurrentPage}
+      />
     </div>
   );
 }

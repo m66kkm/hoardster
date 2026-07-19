@@ -38,7 +38,7 @@ body {
 }
 
 .container {
-  max-width: 1400px;
+  max-width: 95%;
   margin: 0 auto;
   height: 100%;
   display: flex;
@@ -365,6 +365,7 @@ th {
   color: var(--text-primary);
   border-bottom: 1px solid var(--panel-border);
   font-family: 'Outfit', sans-serif;
+  white-space: nowrap;
 }
 
 td {
@@ -372,6 +373,7 @@ td {
   border-bottom: 1px solid var(--panel-border);
   color: var(--text-secondary);
   vertical-align: middle;
+  white-space: nowrap;
 }
 
 tr:last-child td {
@@ -595,7 +597,7 @@ tr:hover td {
 /* Posters Grid Layout */
 .posters-grid {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 1.5rem;
   margin-bottom: 2rem;
 }
@@ -610,6 +612,10 @@ tr:hover td {
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  max-width: 360px;
+  max-height: 540px;
+  width: 100%;
+  margin: 0 auto;
 }
 
 .poster-card:hover {

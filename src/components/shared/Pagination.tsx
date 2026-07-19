@@ -17,6 +17,16 @@ export default function Pagination({
 }: PaginationProps) {
   const { t } = useTranslation();
 
+  const handlePageChange = (page: number) => {
+    onPageChange(page);
+    const scrollContainer = document.querySelector('.tab-content-scrollable');
+    if (scrollContainer) {
+      scrollContainer.scrollTo({ top: 0, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  };
+
   if (totalItems <= 0 || totalPages <= 0) return null;
 
   const start = (currentPage - 1) * pageSize + 1;
@@ -48,7 +58,7 @@ export default function Pagination({
       <div style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
         <button
           className="page-btn"
-          onClick={() => onPageChange(Math.max(currentPage - 1, 1))}
+          onClick={() => handlePageChange(Math.max(currentPage - 1, 1))}
           disabled={currentPage === 1}
         >
           {t("btnPrevPage", "上一页")}
@@ -70,7 +80,7 @@ export default function Pagination({
             <button
               key={pageNum}
               className={`page-btn ${pageNum === currentPage ? "active" : ""}`}
-              onClick={() => onPageChange(pageNum)}
+              onClick={() => handlePageChange(pageNum)}
             >
               {pageNum}
             </button>
@@ -79,7 +89,7 @@ export default function Pagination({
 
         <button
           className="page-btn"
-          onClick={() => onPageChange(Math.min(currentPage + 1, totalPages))}
+          onClick={() => handlePageChange(Math.min(currentPage + 1, totalPages))}
           disabled={currentPage === totalPages}
         >
           {t("btnNextPage", "下一页")}
