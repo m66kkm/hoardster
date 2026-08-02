@@ -286,7 +286,18 @@ const resources = {
       "franGroup": "{{name}} 系列 (包含 {{count}} 部)",
       
       "allTitle": "所有唯一游戏库索引",
-      "allSubtitle": "完整展示盘库的每一个对象，支持无级排序和高级检索。"
+      "allSubtitle": "完整展示盘库的每一个对象，支持无级排序和高级检索。",
+      
+      "reviewScore_0": "评价不可用",
+      "reviewScore_1": "差评如潮",
+      "reviewScore_2": "特别差评",
+      "reviewScore_3": "差评",
+      "reviewScore_4": "多半差评",
+      "reviewScore_5": "褒贬不一",
+      "reviewScore_6": "多半好评",
+      "reviewScore_7": "好评",
+      "reviewScore_8": "特别好评",
+      "reviewScore_9": "好评如潮"
 
     }
   },
@@ -521,7 +532,18 @@ const resources = {
       "franGroup": "{{name}} Series ({{count}} games)",
       
       "allTitle": "Full Index",
-      "allSubtitle": "Complete list of every item in your library. Supports sorting and advanced filtering."
+      "allSubtitle": "Complete list of every item in your library. Supports sorting and advanced filtering.",
+
+      "reviewScore_0": "No user reviews",
+      "reviewScore_1": "Overwhelmingly Negative",
+      "reviewScore_2": "Very Negative",
+      "reviewScore_3": "Negative",
+      "reviewScore_4": "Mostly Negative",
+      "reviewScore_5": "Mixed",
+      "reviewScore_6": "Mostly Positive",
+      "reviewScore_7": "Positive",
+      "reviewScore_8": "Very Positive",
+      "reviewScore_9": "Overwhelmingly Positive"
 
     }
   }

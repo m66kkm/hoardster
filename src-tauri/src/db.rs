@@ -1,9 +1,33 @@
 use rusqlite::{params, Connection, Result};
 use std::collections::HashMap;
 use std::sync::Mutex;
+use crate::steam_service::SteamCacheEntry;
 
 /// 数据库连接状态，通过 Mutex 保护 Connection 实现线程安全共享
 pub struct DbState(pub Mutex<Connection>);
+
+/// 获取并配置主数据库连接（并自动附加 Steam 数据库）
+pub fn get_connection() -> Result<Connection> {
+    let db_path = get_db_path();
+    let conn = Connection::open(db_path)?;
+    
+    // Set busy_timeout FIRST so WAL switch can wait for any stale locks
+    conn.pragma_update(None, "busy_timeout", 10000).ok();
+    // Enable WAL mode for concurrent read/write (non-fatal if stale locks prevent it)
+    conn.pragma_update(None, "journal_mode", "WAL").ok();
+
+    // Attach steam_data.db
+    let steam_db_path = crate::steam_service::get_steam_db_path();
+    conn.execute(
+        &format!("ATTACH DATABASE '{}' AS steam_db", steam_db_path.to_string_lossy().replace("'", "''")),
+        [],
+    )?;
+    
+    // Re-apply busy_timeout after ATTACH to ensure it covers attached db operations
+    conn.pragma_update(None, "busy_timeout", 10000)?;
+
+    Ok(conn)
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct Game {
@@ -25,26 +49,13 @@ pub struct Game {
     pub appid: Option<i64>,
     pub name: Option<String>,
     pub local_cover: Option<String>,
-    pub review_score_desc: Option<String>,
+    pub review_score_desc: Option<i32>,
     pub positive_percent: Option<i64>,
     pub total_reviews: Option<i64>,
     pub release_date: Option<String>,
     pub genres: Option<String>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct SteamCacheEntry {
-    pub base_name: String,
-    pub appid: Option<i64>,
-    pub name: Option<String>,
-    pub local_cover: Option<String>,
-    pub review_score_desc: Option<String>,
-    pub positive_percent: Option<i64>,
-    pub total_reviews: Option<i64>,
-    pub release_date: Option<String>,
-    pub last_updated: Option<String>,
-    pub genres: Option<String>,
-}
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct EpicFreeGame {
@@ -141,37 +152,18 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         [],
     )?;
 
-    // 3. Steam 缓存表
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS steam_cache (
-            base_name TEXT PRIMARY KEY,
-            appid INTEGER,
-            name TEXT,
-            local_cover TEXT,
-            review_score_desc TEXT,
-            positive_percent INTEGER,
-            total_reviews INTEGER,
-            release_date TEXT,
-            last_updated TEXT
-        )",
-        [],
-    )?;
-
-    // Add genres column if not exists (for existing databases)
-    conn.execute("ALTER TABLE steam_cache ADD COLUMN genres TEXT", []).ok();
-
-    // Migrate existing invalid review descriptions to "评价不可用"
-    let _ = conn.execute(
-        "UPDATE steam_cache 
-         SET review_score_desc = '评价不可用' 
-         WHERE review_score_desc IS NULL 
-            OR review_score_desc = '' 
-            OR review_score_desc LIKE '%篇用户评测%' 
-            OR review_score_desc LIKE '%user reviews%' 
-            OR review_score_desc LIKE '%Need more user reviews%' 
-            OR review_score_desc LIKE '%不需要测评%' 
-            OR review_score_desc = '无用户评测'",
-        [],
+    // 迁移旧的字符串评价数据为整数 (Steam review_score_desc values)
+    let _ = conn.execute_batch(
+        "UPDATE steam_db.steam_cache SET review_score_desc = 9 WHERE review_score_desc = '好评如潮' OR review_score_desc = 'Overwhelmingly Positive';
+         UPDATE steam_db.steam_cache SET review_score_desc = 8 WHERE review_score_desc = '特别好评' OR review_score_desc = 'Very Positive';
+         UPDATE steam_db.steam_cache SET review_score_desc = 7 WHERE review_score_desc = '好评' OR review_score_desc = 'Positive';
+         UPDATE steam_db.steam_cache SET review_score_desc = 6 WHERE review_score_desc = '多半好评' OR review_score_desc = 'Mostly Positive';
+         UPDATE steam_db.steam_cache SET review_score_desc = 5 WHERE review_score_desc = '褒贬不一' OR review_score_desc = 'Mixed';
+         UPDATE steam_db.steam_cache SET review_score_desc = 4 WHERE review_score_desc = '多半差评' OR review_score_desc = 'Mostly Negative';
+         UPDATE steam_db.steam_cache SET review_score_desc = 3 WHERE review_score_desc = '差评' OR review_score_desc = 'Negative';
+         UPDATE steam_db.steam_cache SET review_score_desc = 2 WHERE review_score_desc = '特别差评' OR review_score_desc = 'Very Negative';
+         UPDATE steam_db.steam_cache SET review_score_desc = 1 WHERE review_score_desc = '差评如潮' OR review_score_desc = 'Overwhelmingly Negative';
+         UPDATE steam_db.steam_cache SET review_score_desc = 0 WHERE typeof(review_score_desc) = 'text' AND CAST(review_score_desc AS INTEGER) = 0 AND review_score_desc != '0';"
     );
 
     // 4. 配置表
@@ -290,7 +282,7 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     }
 
     // 从 exe 所在目录查找 steam_cache.json 进行导入（仅在 steam_cache 表为空时）
-    let cache_count: i64 = conn.query_row("SELECT count(*) FROM steam_cache", [], |r| r.get(0))?;
+    let cache_count: i64 = conn.query_row("SELECT count(*) FROM steam_db.steam_cache", [], |r| r.get(0))?;
     if cache_count == 0 {
         let mut cache_path = std::env::current_exe().unwrap_or_default();
         cache_path.pop(); // 移除 exe 文件名，保留目录
@@ -303,15 +295,15 @@ pub fn init_db(conn: &Connection) -> Result<()> {
                         let appid = val.get("AppId").and_then(|v| v.as_i64());
                         let name = val.get("Name").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let local_cover = val.get("LocalCover").and_then(|v| v.as_str()).map(|s| s.to_string());
-                        let review_score_desc = val.get("ReviewScoreDesc").and_then(|v| v.as_str()).map(|s| s.to_string());
+                        let review_score_desc = val.get("ReviewScoreDesc").and_then(|v| v.as_i64()).map(|s| s as i32);
                         let positive_percent = val.get("PositivePercent").and_then(|v| v.as_i64()).or_else(|| val.get("PositivePercent").and_then(|v| v.as_f64()).map(|f| f as i64));
                         let total_reviews = val.get("TotalReviews").and_then(|v| v.as_i64());
                         let release_date = val.get("ReleaseDate").and_then(|v| v.as_str()).map(|s| s.to_string());
                         let genres = val.get("Genres").and_then(|v| v.as_str()).map(|s| s.to_string());
                         
                         let _ = conn.execute(
-                            "INSERT OR IGNORE INTO steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT OR IGNORE INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                             params![
                                 base_name,
                                 appid,
@@ -353,7 +345,7 @@ pub fn remove_scan_path(conn: &Connection, path: &str) -> Result<()> {
 }
 
 pub fn get_steam_cache(conn: &Connection) -> Result<HashMap<String, SteamCacheEntry>> {
-    let mut stmt = conn.prepare("SELECT base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres FROM steam_cache")?;
+    let mut stmt = conn.prepare("SELECT base_name, appid, name, local_cover, CAST(review_score_desc AS INTEGER), positive_percent, total_reviews, release_date, last_updated, genres FROM steam_db.steam_cache")?;
     let rows = stmt.query_map([], |row| {
         Ok(SteamCacheEntry {
             base_name: row.get(0)?,
@@ -378,13 +370,28 @@ pub fn get_steam_cache(conn: &Connection) -> Result<HashMap<String, SteamCacheEn
 }
 
 pub fn clear_steam_cache(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM steam_cache", [])?;
+    conn.execute("DROP TABLE IF EXISTS steam_db.steam_cache", [])?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS steam_db.steam_cache (
+            base_name TEXT PRIMARY KEY,
+            appid INTEGER,
+            name TEXT,
+            local_cover TEXT,
+            review_score_desc INTEGER,
+            positive_percent INTEGER,
+            total_reviews INTEGER,
+            release_date TEXT,
+            last_updated TEXT,
+            genres TEXT
+        )",
+        [],
+    )?;
     Ok(())
 }
 
 pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres)
+        "INSERT OR REPLACE INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         params![
             entry.base_name,
@@ -471,9 +478,9 @@ pub fn get_games_list(
 ) -> Result<Vec<Game>> {
     let mut query = String::from(
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, s.review_score_desc, s.positive_percent, s.total_reviews, s.release_date, s.genres
+                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.release_date, s.genres
          FROM games g
-         LEFT JOIN steam_cache s ON g.base_name = s.base_name
+         LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
          WHERE 1=1"
     );
 
@@ -484,7 +491,7 @@ pub fn get_games_list(
     }
 
     if only_installed {
-        query.push_str(" AND (g.source_path LIKE 'D:%' OR g.source_path LIKE 'E:%')");
+        query.push_str(" AND g.type = 'Installed'");
     }
 
     if !search.is_empty() {
@@ -506,7 +513,7 @@ pub fn get_games_list(
 
     if !rating.is_empty() {
         let param_index = params_vec.len() + 1;
-        query.push_str(&format!(" AND s.review_score_desc = ?{}", param_index));
+        query.push_str(&format!(" AND CAST(s.review_score_desc AS INTEGER) = ?{}", param_index));
         params_vec.push(Box::new(rating.to_string()));
     }
 
@@ -562,16 +569,16 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
     // 1. 获取所有重复游戏
     let query = if dup_type == "exact" {
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, s.review_score_desc, s.positive_percent, s.total_reviews, s.release_date, s.genres
+                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.release_date, s.genres
          FROM games g
-         LEFT JOIN steam_cache s ON g.base_name = s.base_name
+         LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
          WHERE g.is_exact_dup = 1
          ORDER BY g.base_name ASC, g.original_name ASC"
     } else {
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, s.review_score_desc, s.positive_percent, s.total_reviews, s.release_date, s.genres
+                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.release_date, s.genres
          FROM games g
-         LEFT JOIN steam_cache s ON g.base_name = s.base_name
+         LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
          WHERE g.is_version_dup = 1
          ORDER BY g.base_name ASC, g.original_name ASC"
     };
@@ -646,9 +653,9 @@ pub fn get_franchises(conn: &Connection) -> Result<Vec<FranchiseGroup>> {
     // 获取所有代表游戏用于系列分组
     let mut stmt = conn.prepare(
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, s.review_score_desc, s.positive_percent, s.total_reviews, s.release_date, s.genres
+                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.release_date, s.genres
          FROM games g
-         LEFT JOIN steam_cache s ON g.base_name = s.base_name
+         LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
          WHERE g.is_representative = 1
          ORDER BY g.base_name ASC"
     )?;
@@ -767,7 +774,7 @@ pub fn get_all_config(conn: &Connection) -> Result<HashMap<String, String>> {
 }
 
 pub fn get_all_genres(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT genres FROM steam_cache WHERE genres IS NOT NULL")?;
+    let mut stmt = conn.prepare("SELECT genres FROM steam_db.steam_cache WHERE genres IS NOT NULL")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     
     let mut genre_set = std::collections::HashSet::new();
@@ -796,7 +803,7 @@ pub struct GenreStat {
 pub fn get_genre_stats(conn: &Connection) -> Result<Vec<GenreStat>> {
     let mut stmt = conn.prepare(
         "SELECT s.genres FROM games g 
-         JOIN steam_cache s ON g.base_name = s.base_name 
+         JOIN steam_db.steam_cache s ON g.base_name = s.base_name 
          WHERE g.is_representative = 1 AND s.genres IS NOT NULL"
     )?;
     
@@ -828,37 +835,25 @@ pub struct RatingStat {
 
 pub fn get_rating_stats(conn: &Connection) -> Result<Vec<RatingStat>> {
     let mut stmt = conn.prepare(
-        "SELECT s.review_score_desc FROM games g 
-         JOIN steam_cache s ON g.base_name = s.base_name 
+        "SELECT CAST(s.review_score_desc AS INTEGER) FROM games g 
+         JOIN steam_db.steam_cache s ON g.base_name = s.base_name 
          WHERE g.is_representative = 1"
     )?;
     
-    let rows = stmt.query_map([], |row| row.get::<_, Option<String>>(0))?;
+    let rows = stmt.query_map([], |row| row.get::<_, Option<i32>>(0))?;
     
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut counts: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
     
     for r in rows.flatten() {
-        let rating = r.unwrap_or_default().trim().to_string();
-        
-        let final_rating = if rating.is_empty() 
-           || rating.contains("篇用户评测") 
-           || rating.contains("user reviews") 
-           || rating.contains("Need more user reviews")
-           || rating.contains("不需要测评") 
-        {
-            "评价不可用".to_string()
-        } else {
-            rating
-        };
-        
+        let final_rating = r.unwrap_or(0);
         *counts.entry(final_rating).or_insert(0) += 1;
     }
     
-    let mut stats: Vec<RatingStat> = counts.into_iter().map(|(name, count)| RatingStat { name, count }).collect();
+    let mut stats: Vec<RatingStat> = counts.into_iter().map(|(name, count)| RatingStat { name: name.to_string(), count }).collect();
     stats.sort_by(|a, b| {
-        if a.name == "评价不可用" && b.name != "评价不可用" {
+        if a.name == "0" && b.name != "0" {
             std::cmp::Ordering::Greater
-        } else if a.name != "评价不可用" && b.name == "评价不可用" {
+        } else if a.name != "0" && b.name == "0" {
             std::cmp::Ordering::Less
         } else {
             b.count.cmp(&a.count)

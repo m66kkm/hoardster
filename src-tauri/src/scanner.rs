@@ -1,7 +1,8 @@
-use crate::db::{Game, SteamCacheEntry, get_scan_paths, get_steam_cache, get_config, insert_steam_cache_entry, save_scanned_games, insert_scan_history};
+use crate::db::{Game, get_scan_paths, get_steam_cache, get_config, insert_steam_cache_entry, save_scanned_games, insert_scan_history};
+use crate::steam_service::SteamCacheEntry;
+use chrono::Datelike;
 use reqwest::blocking::Client;
 use regex::Regex;
-use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -46,19 +47,20 @@ pub fn base_game_name(name: &str) -> String {
     clean = DIVIDERS_RE.replace_all(&clean, " ").into_owned();
     
     let repack_tags = vec![
+        "digital\\s+deluxe\\s+edition", "digital\\s+edition",
+        "game\\s+of\\s+the\\s+year\\s+edition", "goty",
         "fitgirl repack", "fitgirl monkey repack", "decepticon repack", "dodi repack",
         "rune", "tenoke", "razor1911", "flt", "voices38", "cpy", "empress", "codex",
         "skidrow", "plaza", "hoodlum", "dinobytes", "unleashed", "delight", "insaneramzes", "p2p",
         "betav1.2.readnfo-mkdev", "read nfo", "readnfo", "proper", "repack", "pre-installed", "cracked",
         "reloaded", "rip", "unlocked", "multi\\s?\\d+", "deluxe\\s+edition", "ultimate\\s+edition", "gold\\s+edition",
-        "complete\\s+edition", "director[s\\s\\x27]+cut", "game\\s+of\\s+the\\s+year\\s+edition", "goty", "remastered",
+        "complete\\s+edition", "director[s\\s\\x27]+cut", "remastered",
         "definitive\\s+edition", "enhanced\\s+edition", "special\\s+edition", "xxl\\s+edition", "legendary\\s+edition",
         "anniversary\\s+edition", "collector[s\\s\\x27]+edition", "limited\\s+edition", "day\\s+one\\s+edition",
         "standard\\s+edition", "hd\\s+edition", "classic\\s+edition", "premium\\s+edition", "hrdc",
         "elamigos", "gog", "3dm", "ali213", "canek77", "wanterlude", "decepticon", "fitgirl", "dodi",
         "early\\s+access", "portable", "dlc\\s+unlocker", "incl\\s+dlc", "with\\s+update", "with\\s+up\\d+",
-        "chs", "cht", "complete\\s+bundle", "bundle", "collection", "steam", "gog\\s+edition", "by\\s+\\w+",
-        "digital\\s+deluxe\\s+edition", "digital\\s+edition"
+        "chs", "cht", "complete\\s+bundle", "bundle", "collection", "steam", "gog\\s+edition", "by\\s+\\w+"
     ];
     
     for tag in repack_tags {
@@ -87,6 +89,30 @@ fn get_dir_size<P: AsRef<Path>>(path: P) -> u64 {
         .filter_map(|e| e.metadata().ok())
         .map(|m| m.len())
         .sum()
+}
+
+fn is_installed_game<P: AsRef<Path>>(path: P) -> bool {
+    WalkDir::new(path)
+        .skip_hidden(true)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .any(|e| {
+            if e.file_type().is_dir() {
+                return false;
+            }
+            if let Some(ext) = e.path().extension() {
+                if ext.eq_ignore_ascii_case("exe") {
+                    let file_name = e.file_name().to_string_lossy().to_lowercase();
+                    if !file_name.contains("setup") 
+                        && !file_name.contains("install") 
+                        && !file_name.contains("autorun") 
+                        && !file_name.contains("unins") {
+                        return true;
+                    }
+                }
+            }
+            false
+        })
 }
 
 fn format_size(bytes: u64) -> String {
@@ -127,8 +153,7 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         },
     );
 
-    let db_path = crate::db::get_db_path();
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = crate::db::get_connection().map_err(|e| e.to_string())?;
 
     let scan_paths = get_scan_paths(&conn).map_err(|e| e.to_string())?;
     let cache = get_steam_cache(&conn).map_err(|e| e.to_string())?;
@@ -223,7 +248,13 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                 let is_iso = entry.path().extension().map_or(false, |ext| ext == "iso");
 
                 if is_dir || is_iso {
-                    let r#type = if is_dir { "Directory".to_string() } else { "ISO".to_string() };
+                    let r#type = if is_iso {
+                        "ISO".to_string()
+                    } else if is_installed_game(entry.path()) {
+                        "Installed".to_string()
+                    } else {
+                        "Archive".to_string()
+                    };
                     let full_path = entry.path().to_string_lossy().into_owned();
 
                     let created_str = if let Ok(created_time) = metadata.created() {
@@ -401,148 +432,44 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                                 std::thread::sleep(Duration::from_millis(steam_api_delay_ms));
                             }
 
-                            let encoded = urlencoding::encode(&base_name);
-                            let search_url = format!("https://store.steampowered.com/api/storesearch/?term={}&l={}&cc=CN", encoded, lang);
+                            let mut entry = crate::steam_service::fetch_steam_game_info(&client_clone, &base_name, &lang).unwrap();
+                            
+                            // 封面下载逻辑
+                            if let Some(cover_url) = entry.local_cover.clone() {
+                                if let Some(app_id) = entry.appid {
+                                    let cover_filename = format!("{}.jpg", app_id);
+                                    let local_path = covers_dir_clone.join(&cover_filename);
 
-                            let mut entry = SteamCacheEntry {
-                                base_name: base_name.clone(),
-                                appid: None,
-                                name: None,
-                                local_cover: None,
-                                review_score_desc: None,
-                                positive_percent: None,
-                                total_reviews: None,
-                                release_date: None,
-                                last_updated: Some(chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()),
-                                genres: None,
-                            };
-
-                            if let Ok(res) = client_clone.get(&search_url).send() {
-                                if let Ok(res_str) = res.text() {
-                                    if let Ok(res_json) = serde_json::from_str::<Value>(&res_str) {
-                                        if let Some(items) = res_json.get("items").and_then(|i| i.as_array()) {
-                                            if !items.is_empty() {
-                                                let mut best_match = None;
-                                                for item in items {
-                                                    if item.get("type").and_then(|t| t.as_str()) == Some("app") {
-                                                        let name_str = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_lowercase();
-                                                        // Fallback matching to exact english name if present, otherwise steam's top search is usually accurate
-                                                        if name_str == base_name {
-                                                            best_match = Some(item);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                                if best_match.is_none() {
-                                                    for item in items {
-                                                        if item.get("type").and_then(|t| t.as_str()) == Some("app") {
-                                                            best_match = Some(item);
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                                if best_match.is_none() {
-                                                    best_match = Some(&items[0]);
-                                                }
-
-                                                if let Some(best) = best_match {
-                                                    if let Some(app_id) = best.get("id").and_then(|id| id.as_i64()) {
-                                                        entry.appid = Some(app_id);
-                                                        entry.name = best.get("name").and_then(|n| n.as_str()).map(String::from);
-                                                        
-                                                        let cover_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id);
-                                                        let cover_filename = format!("{}.jpg", app_id);
-                                                        
-                                                        let local_path = covers_dir_clone.join(&cover_filename);
-
-                                                        let mut download_success = false;
-                                                        if let Ok(head_res) = client_clone.head(&cover_url).send() {
-                                                            if head_res.status().is_success() {
-                                                                if let Ok(img_res) = client_clone.get(&cover_url).send() {
-                                                                    if img_res.status().is_success() {
-                                                                        if let Ok(img_bytes) = img_res.bytes() {
-                                                                            let _ = fs::write(&local_path, &img_bytes);
-                                                                            download_success = true;
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        if !download_success {
-                                                            let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
-                                                            if let Ok(img_res) = client_clone.get(&fallback_url).send() {
-                                                                if img_res.status().is_success() {
-                                                                    if let Ok(img_bytes) = img_res.bytes() {
-                                                                        let _ = fs::write(&local_path, &img_bytes);
-                                                                        download_success = true;
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        if download_success {
-                                                            entry.local_cover = Some(format!("covers/{}", cover_filename));
-                                                        }
-
-                                                        let review_url = format!("https://store.steampowered.com/appreviews/{}?json=1&l={}", app_id, lang);
-                                                        if let Ok(review_res) = client_clone.get(&review_url).send().and_then(|r| r.json::<Value>()) {
-                                                            if let Some(qs) = review_res.get("query_summary") {
-                                                                if let Some(total) = qs.get("total_reviews").and_then(|t| t.as_i64()) {
-                                                                    if total > 0 {
-                                                                        entry.total_reviews = Some(total);
-                                                                        let raw_desc = qs.get("review_score_desc").and_then(|s| s.as_str()).map(String::from);
-                                                                        if let Some(desc) = raw_desc {
-                                                                            if desc.is_empty() 
-                                                                               || desc.contains("篇用户评测") 
-                                                                               || desc.contains("user reviews") 
-                                                                               || desc.contains("Need more user reviews")
-                                                                               || desc.contains("不需要测评") 
-                                                                            {
-                                                                                entry.review_score_desc = Some("评价不可用".to_string());
-                                                                            } else {
-                                                                                entry.review_score_desc = Some(desc);
-                                                                            }
-                                                                        } else {
-                                                                            entry.review_score_desc = Some("评价不可用".to_string());
-                                                                        }
-                                                                        
-                                                                        if let Some(positive) = qs.get("total_positive").and_then(|p| p.as_i64()) {
-                                                                            let percent = (positive as f64 / total as f64 * 100.0).round() as i64;
-                                                                            entry.positive_percent = Some(percent);
-                                                                        }
-                                                                    } else {
-                                                                        entry.review_score_desc = Some("评价不可用".to_string());
-                                                                        entry.total_reviews = Some(0);
-                                                                        entry.positive_percent = Some(0);
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-
-                                                        let details_url = format!("https://store.steampowered.com/api/appdetails?appids={}&filters=basic,release_date,genres&l={}&cc=CN", app_id, lang);
-                                                        if let Ok(details_res) = client_clone.get(&details_url).send().and_then(|r| r.json::<Value>()) {
-                                                            if let Some(data) = details_res.get(&app_id.to_string()).and_then(|app| app.get("data")) {
-                                                                if let Some(loc_name) = data.get("name").and_then(|n| n.as_str()) {
-                                                                    entry.name = Some(loc_name.to_string());
-                                                                }
-                                                                if let Some(date_val) = data.get("release_date").and_then(|rd| rd.get("date")) {
-                                                                    entry.release_date = date_val.as_str().map(String::from);
-                                                                }
-                                                                if let Some(genres_array) = data.get("genres").and_then(|g| g.as_array()) {
-                                                                    let genres_str: Vec<String> = genres_array.iter()
-                                                                        .filter_map(|g| g.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
-                                                                        .collect();
-                                                                    if !genres_str.is_empty() {
-                                                                        entry.genres = Some(genres_str.join(", "));
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
+                                    let mut download_success = false;
+                                    if let Ok(head_res) = client_clone.head(&cover_url).send() {
+                                        if head_res.status().is_success() {
+                                            if let Ok(img_res) = client_clone.get(&cover_url).send() {
+                                                if img_res.status().is_success() {
+                                                    if let Ok(img_bytes) = img_res.bytes() {
+                                                        let _ = fs::write(&local_path, &img_bytes);
+                                                        download_success = true;
                                                     }
                                                 }
                                             }
                                         }
+                                    }
+
+                                    if !download_success {
+                                        let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
+                                        if let Ok(img_res) = client_clone.get(&fallback_url).send() {
+                                            if img_res.status().is_success() {
+                                                if let Ok(img_bytes) = img_res.bytes() {
+                                                    let _ = fs::write(&local_path, &img_bytes);
+                                                    download_success = true;
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    if download_success {
+                                        entry.local_cover = Some(format!("covers/{}", cover_filename));
+                                    } else {
+                                        entry.local_cover = None;
                                     }
                                 }
                             }
@@ -584,7 +511,32 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                 },
             );
 
-            let _ = insert_steam_cache_entry(&conn, &entry);
+            // Retry up to 3 times on database lock errors
+            for attempt in 0..3 {
+                match insert_steam_cache_entry(&conn, &entry) {
+                    Ok(_) => break,
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        if err_str.contains("locked") && attempt < 2 {
+                            println!("Steam cache insert locked, retrying ({}/3): {}", attempt + 1, base_name);
+                            std::thread::sleep(Duration::from_millis(500 * (attempt as u64 + 1)));
+                        } else {
+                            println!("Error inserting steam cache for {}: {}", base_name, e);
+                            break;
+                        }
+                    }
+                }
+            }
+            // Update raw_scanned so the first scan has the steam data
+            raw_scanned[_g_idx].appid = entry.appid;
+            raw_scanned[_g_idx].name = entry.name.clone().or(raw_scanned[_g_idx].name.clone());
+            raw_scanned[_g_idx].local_cover = entry.local_cover.clone();
+            raw_scanned[_g_idx].review_score_desc = entry.review_score_desc;
+            raw_scanned[_g_idx].positive_percent = entry.positive_percent.map(|x| x as i64);
+            raw_scanned[_g_idx].total_reviews = entry.total_reviews.map(|x| x as i64);
+            raw_scanned[_g_idx].release_date = entry.release_date.clone();
+            raw_scanned[_g_idx].genres = entry.genres.clone();
+            
             new_steam_entries += 1;
         }
     }

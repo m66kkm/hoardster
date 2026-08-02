@@ -199,9 +199,21 @@ export default function SettingsPanel({
                 onClick={async () => {
                   try {
                     await invoke("clear_steam_cache_command");
+                    if ((window as any).__TAURI_PLUGIN_DIALOG__) {
+                      const { message } = await import("@tauri-apps/plugin-dialog");
+                      message("Steam缓存已清空，开始重新获取数据！", { title: '成功', kind: 'info' });
+                    }
                     startScan();
+                    const container = document.querySelector('.tab-content-scrollable');
+                    if (container) {
+                      container.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
                   } catch (e) {
-                    console.error(e);
+                    console.error("clear_steam_cache_command error:", e);
+                    if ((window as any).__TAURI_PLUGIN_DIALOG__) {
+                       const { message } = await import("@tauri-apps/plugin-dialog");
+                       message(`Error clearing cache: ${e}`, { title: 'Error', kind: 'error' });
+                    }
                   }
                 }} 
                 style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}

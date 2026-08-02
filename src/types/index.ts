@@ -18,7 +18,7 @@ export interface Game {
   appid?: number;
   name?: string;
   local_cover?: string;
-  review_score_desc?: string;
+  review_score_desc?: number | string;
   positive_percent?: number;
   total_reviews?: number;
   release_date?: string;

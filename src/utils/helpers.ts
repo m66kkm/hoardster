@@ -1,20 +1,33 @@
 // Helper for steam ratings color
-export const getRatingColorClass = (desc?: string): string => {
-  if (!desc) return "rating-none";
-  const lower = desc.toLowerCase();
-  if (lower.includes("overwhelmingly positive") || lower.includes("very positive")) {
+export const getRatingColorClass = (desc?: number | string): string => {
+  if (desc === undefined || desc === null || desc === 0 || desc === "0") return "rating-none";
+  
+  const score = typeof desc === 'string' ? parseInt(desc, 10) : desc;
+  
+  if (score === 8 || score === 9) {
     return "rating-high";
   }
-  if (lower.includes("mostly positive") || lower.includes("positive")) {
+  if (score === 6 || score === 7) {
     return "rating-good";
   }
-  if (lower.includes("mixed")) {
+  if (score === 5) {
     return "rating-mixed";
   }
-  if (lower.includes("negative")) {
+  if (score >= 1 && score <= 4) {
     return "rating-bad";
   }
   return "rating-none";
+};
+
+export const getReviewScoreText = (t: any, desc?: number | string): string => {
+  if (desc === undefined || desc === null) return t("reviewScore_0");
+  if (typeof desc === "number") return t(`reviewScore_${desc}`);
+  
+  // Backward compatibility for old string data before migration
+  const num = parseInt(desc as string, 10);
+  if (!isNaN(num)) return t(`reviewScore_${num}`);
+  
+  return desc as string;
 };
 
 // Cover image resolver
@@ -25,6 +38,12 @@ export const getCoverUrl = (localCover?: string): string | null => {
     return `http://cover.localhost/${filename}`;
   }
   return null;
+};
+
+export const getTypeBadgeClass = (type?: string): string => {
+  if (type === "Installed" || type === "Directory") return "badge-dir";
+  if (type === "Archive") return "badge-ver";
+  return "badge-iso";
 };
 
 // Fallback gradient generator

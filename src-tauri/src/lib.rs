@@ -3,13 +3,13 @@ mod error;
 mod scanner;
 mod epic;
 mod steam_api;
+mod steam_service;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use rusqlite::params;
-use rusqlite::Connection;
 use regex::Regex;
 
 /// 扫描状态，用于支持取消扫描操作
@@ -140,6 +140,89 @@ fn get_scan_history_command(state: tauri::State<'_, db::DbState>) -> Result<Vec<
 fn clear_steam_cache_command(state: tauri::State<'_, db::DbState>) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::clear_steam_cache(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn fetch_steam_game_info_command(
+    base_name: String,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, db::DbState>,
+) -> Result<Option<crate::steam_service::SteamCacheEntry>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // 获取语言设置
+    let lang = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        match db::get_config(&conn, "language") {
+            Ok(Some(l)) => l,
+            _ => "schinese".to_string(),
+        }
+    };
+
+    let base_name_clone = base_name.clone();
+    let mut covers_dir = std::env::current_exe().unwrap_or_default();
+    covers_dir.pop();
+    covers_dir.push("covers");
+    let _ = std::fs::create_dir_all(&covers_dir);
+
+    // 由于 reqwest::blocking 是同步的，我们需要在阻塞线程中运行
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let mut entry = crate::steam_service::fetch_steam_game_info(&client, &base_name_clone, &lang)?;
+        
+        // 下载封面图
+        if let Some(cover_url) = entry.local_cover.clone() {
+            if let Some(app_id) = entry.appid {
+                let cover_filename = format!("{}.jpg", app_id);
+                let local_path = covers_dir.join(&cover_filename);
+
+                let mut download_success = false;
+                if let Ok(head_res) = client.head(&cover_url).send() {
+                    if head_res.status().is_success() {
+                        if let Ok(img_res) = client.get(&cover_url).send() {
+                            if img_res.status().is_success() {
+                                if let Ok(img_bytes) = img_res.bytes() {
+                                    let _ = std::fs::write(&local_path, &img_bytes);
+                                    download_success = true;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !download_success {
+                    let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
+                    if let Ok(img_res) = client.get(&fallback_url).send() {
+                        if img_res.status().is_success() {
+                            if let Ok(img_bytes) = img_res.bytes() {
+                                let _ = std::fs::write(&local_path, &img_bytes);
+                                download_success = true;
+                            }
+                        }
+                    }
+                }
+
+                if download_success {
+                    entry.local_cover = Some(format!("covers/{}", cover_filename));
+                } else {
+                    entry.local_cover = None;
+                }
+            }
+        }
+        Some(entry)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if let Some(entry) = result {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        db::insert_steam_cache_entry(&conn, &entry).map_err(|e| e.to_string())?;
+        Ok(Some(entry))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command]
@@ -368,8 +451,7 @@ async fn scrape_1337x_command(
     let session_time = chrono::Utc::now().to_rfc3339();
 
     let concurrency = {
-        let db_path = db::get_db_path();
-        if let Ok(conn) = Connection::open(db_path) {
+        if let Ok(conn) = crate::db::get_connection() {
             let threads_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_threads'", [], |r| r.get(0)).unwrap_or_else(|_| "5".to_string());
             threads_str.parse::<u32>().unwrap_or(5).max(1).min(20)
         } else {
@@ -440,11 +522,9 @@ async fn scrape_1337x_command(
         if !all_parsed.is_empty() {
             let mut seen = std::collections::HashSet::new();
             all_parsed.retain(|t| seen.insert(t.torrent_id.clone()));
-
-            let db_path = db::get_db_path();
             let session_time_clone = session_time.clone();
             let (new_consecutive, new_added) = tokio::task::spawn_blocking(move || -> Result<(usize, usize), String> {
-                let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+                let mut conn = crate::db::get_connection().map_err(|e| e.to_string())?;
                 let mut local_consecutive = consecutive_existing;
                 let mut newly_added = 0;
                 
@@ -610,8 +690,7 @@ async fn scrape_sr_command(
     let mut total_new_added = 0;
 
     let concurrency = {
-        let db_path = db::get_db_path();
-        if let Ok(conn) = Connection::open(db_path) {
+        if let Ok(conn) = crate::db::get_connection() {
             let threads_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_threads'", [], |r| r.get(0)).unwrap_or_else(|_| "5".to_string());
             threads_str.parse::<u32>().unwrap_or(5).max(1).min(20)
         } else {
@@ -684,9 +763,8 @@ async fn scrape_sr_command(
             let mut seen = std::collections::HashSet::new();
             all_parsed.retain(|t| seen.insert(t.id.clone()));
 
-            let db_path = db::get_db_path();
             let (new_consecutive, new_added) = tokio::task::spawn_blocking(move || -> Result<(usize, usize), String> {
-                let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+                let mut conn = crate::db::get_connection().map_err(|e| e.to_string())?;
                 let mut local_consecutive = consecutive_existing;
                 let mut newly_added = 0;
                 
@@ -738,16 +816,14 @@ async fn scrape_sr_command(
 
 #[tauri::command]
 fn clear_data_1337x() -> Result<(), String> {
-    let db_path = db::get_db_path();
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = crate::db::get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM torrents_1337x", []).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn clear_data_sr() -> Result<(), String> {
-    let db_path = db::get_db_path();
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let conn = crate::db::get_connection().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM skidrow_reloaded", []).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -758,9 +834,17 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // 初始化数据库连接
-            let db_path = db::get_db_path();
-            let conn = rusqlite::Connection::open(db_path)
+            // 初始化 Steam 数据库（在独立作用域中，确保连接在 get_connection 之前释放）
+            {
+                let steam_db_path = crate::steam_service::get_steam_db_path();
+                let steam_conn = rusqlite::Connection::open(&steam_db_path)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                crate::steam_service::init_steam_db(&steam_conn)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+            } // steam_conn 在这里被 drop，释放对 steam_data.db 的锁
+
+            // 初始化主数据库连接
+            let conn = db::get_connection()
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
             db::init_db(&conn)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
@@ -822,6 +906,7 @@ pub fn run() {
             get_all_config_command,
             get_scan_history_command,
             clear_steam_cache_command,
+            fetch_steam_game_info_command,
             get_all_genres_command,
             get_genre_stats_command,
             get_rating_stats_command,

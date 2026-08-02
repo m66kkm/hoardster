@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, ExternalLink } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { FranchiseGroup } from "../types";
-import { getRatingColorClass, getCoverUrl } from "../utils/helpers";
+import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass } from "../utils/helpers";
 
 interface FranchisesPanelProps {
   franchises: FranchiseGroup[];
@@ -74,16 +74,16 @@ export default function FranchisesPanel({ franchises, openAccordions, toggleAcco
                             {g.original_name}
                           </td>
                           <td>
-                            {g.review_score_desc ? (
+                            {g.review_score_desc !== undefined && g.review_score_desc !== null && g.review_score_desc !== "" ? (
                               <span className={`rating-text ${getRatingColorClass(g.review_score_desc)}`} title={t("steamRatingHover", { percent: g.positive_percent, total: g.total_reviews })}>
-                                👍 {g.positive_percent}% ({g.review_score_desc})
+                                👍 {g.positive_percent}% ({getReviewScoreText(t, g.review_score_desc)})
                               </span>
                             ) : (
-                              <span style={{ color: "var(--text-secondary)", opacity: 0.3 }}>-</span>
+                              <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating")}</span>
                             )}
                           </td>
                           <td>
-                            <span className={`badge ${g.type === "Directory" ? "badge-dir" : "badge-iso"}`}>{g.type}</span>
+                            <span className={`badge ${getTypeBadgeClass(g.type)}`}>{g.type}</span>
                           </td>
                           <td>
                             <span className="code-path" onClick={() => copyPath(g.full_path, g.original_name)} title={t("copyPathMsg")}>{g.full_path}</span>

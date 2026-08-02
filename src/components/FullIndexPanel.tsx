@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import type { Game } from "../types";
-import { getRatingColorClass, getCoverUrl } from "../utils/helpers";
+import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass } from "../utils/helpers";
 import Pagination from "./shared/Pagination";
 
 interface FullIndexPanelProps {
@@ -90,19 +90,19 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                     {game.name || game.original_name}
                   </td>
                   <td>
-                    {game.review_score_desc ? (
+                    {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" ? (
                       <span className={`rating-text ${getRatingColorClass(game.review_score_desc)}`}>
-                        👍 {game.positive_percent}% ({game.review_score_desc})
+                        👍 {game.positive_percent}% ({getReviewScoreText(t, game.review_score_desc)})
                       </span>
                     ) : (
-                      <span style={{ color: "var(--text-secondary)", opacity: 0.3 }}>-</span>
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating")}</span>
                     )}
                   </td>
                   <td>
                     {game.genres ? <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{game.genres}</span> : <span style={{ color: "var(--text-secondary)", opacity: 0.3 }}>-</span>}
                   </td>
                   <td>
-                    <span className={`badge ${game.type === "Directory" ? "badge-dir" : "badge-iso"}`}>{game.type}</span>
+                    <span className={`badge ${getTypeBadgeClass(game.type)}`}>{game.type}</span>
                   </td>
                   <td>
                     {game.is_exact_dup && <span className="badge badge-dup" style={{ marginRight: "0.35rem" }}>{t("tagExactDup")}</span>}

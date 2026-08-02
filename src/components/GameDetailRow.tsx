@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import type { Game } from "../types";
-import { getRatingColorClass, getCoverUrl, getGradientsForName } from "../utils/helpers";
+import { getRatingColorClass, getCoverUrl, getGradientsForName, getReviewScoreText, getTypeBadgeClass } from "../utils/helpers";
 
 interface GameDetailRowProps {
   game: Game;
@@ -28,7 +28,7 @@ export default function GameDetailRow({ game, onCopyPath, onOpenFolder }: GameDe
           <div className="detail-game-title" title={game.name || game.original_name}>{game.name || game.original_name}</div>
         </div>
         <div className="detail-path-line">
-          <span className={`badge ${game.type === "Directory" ? "badge-dir" : "badge-iso"}`}>{game.type}</span>
+          <span className={`badge ${getTypeBadgeClass(game.type)}`}>{game.type}</span>
           <span className="code-path" onClick={(e) => { e.stopPropagation(); onCopyPath(game.full_path, game.original_name); }} title={t("copyPathMsg")}>{game.full_path}</span>
         </div>
         <div className="detail-info-line">
@@ -38,9 +38,9 @@ export default function GameDetailRow({ game, onCopyPath, onOpenFolder }: GameDe
         </div>
       </div>
       <div className="detail-right-meta">
-        {game.review_score_desc ? (
+        {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" ? (
           <span className={`rating-text ${getRatingColorClass(game.review_score_desc)}`} title={t("steamRatingHover", { percent: game.positive_percent, total: game.total_reviews })}>
-            👍 {game.positive_percent}% ({game.review_score_desc})
+            👍 {game.positive_percent}% ({getReviewScoreText(t, game.review_score_desc)})
           </span>
         ) : (
           <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating")}</span>

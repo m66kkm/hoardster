@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { ExternalLink, Layers, AlertTriangle } from "lucide-react";
+import { getTypeBadgeClass } from "../utils/helpers";
 import type { DuplicateGroup, Game } from "../types";
 
 interface DuplicatesPanelProps {
@@ -25,7 +26,7 @@ export default function DuplicatesPanel({ exactDuplicates, versionDuplicates, co
         {group.games.map((game: Game) => (
           <div key={game.full_path} className={`conflict-path-item ${game.type.toLowerCase()}`}>
             <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flex: 1, minWidth: "280px" }}>
-              <span className={`badge ${game.type === "Directory" ? "badge-dir" : "badge-iso"}`}>{game.type}</span>
+              <span className={`badge ${getTypeBadgeClass(game.type)}`}>{game.type}</span>
               <div style={{ display: "flex", flexDirection: "column" }}>
                 {type === "version" && <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>{game.original_name}</span>}
                 <span className="code-path" onClick={() => copyPath(game.full_path, game.original_name)} title="点击复制路径">{game.full_path}</span>
