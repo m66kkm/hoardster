@@ -152,6 +152,23 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         [],
     )?;
 
+    // 确保 attached 的 steam_db.steam_cache 表存在
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS steam_db.steam_cache (
+            base_name TEXT PRIMARY KEY,
+            appid INTEGER,
+            name TEXT,
+            local_cover TEXT,
+            review_score_desc INTEGER,
+            positive_percent INTEGER,
+            total_reviews INTEGER,
+            release_date TEXT,
+            last_updated TEXT,
+            genres TEXT
+        )",
+        [],
+    )?;
+
     // 迁移旧的字符串评价数据为整数 (Steam review_score_desc values)
     let _ = conn.execute_batch(
         "UPDATE steam_db.steam_cache SET review_score_desc = 9 WHERE review_score_desc = '好评如潮' OR review_score_desc = 'Overwhelmingly Positive';
@@ -165,6 +182,11 @@ pub fn init_db(conn: &Connection) -> Result<()> {
          UPDATE steam_db.steam_cache SET review_score_desc = 1 WHERE review_score_desc = '差评如潮' OR review_score_desc = 'Overwhelmingly Negative';
          UPDATE steam_db.steam_cache SET review_score_desc = 0 WHERE typeof(review_score_desc) = 'text' AND CAST(review_score_desc AS INTEGER) = 0 AND review_score_desc != '0';"
     );
+
+    // 清理此前网络受限或失败写入的 appid 为 NULL 的无效缓存记录，以便重新向 Steam 查询
+    let _ = conn.execute("DELETE FROM steam_db.steam_cache WHERE appid IS NULL", []);
+    // 清理评测不足 (score = 0 或 total_reviews < 10) 的误报百分比
+    let _ = conn.execute("UPDATE steam_db.steam_cache SET positive_percent = NULL WHERE review_score_desc = 0 OR total_reviews < 10", []);
 
     // 4. 配置表
     conn.execute(
@@ -203,13 +225,37 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             uploader TEXT,
             uploader_url TEXT,
             fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            published_ts INTEGER DEFAULT 0
+            published_ts INTEGER DEFAULT 0,
+            base_name TEXT
         )",
         [],
     )?;
 
     // Add published_ts column if not exists (for existing databases)
     conn.execute("ALTER TABLE torrents_1337x ADD COLUMN published_ts INTEGER DEFAULT 0", []).ok();
+    // Add base_name column if not exists (for existing databases)
+    conn.execute("ALTER TABLE torrents_1337x ADD COLUMN base_name TEXT", []).ok();
+
+    // 自动为已有但缺少 base_name 的记录补充清洗后的 base_name
+    let unpopulated_1337: Vec<(i64, String)> = {
+        let stmt = conn.prepare("SELECT id, name FROM torrents_1337x WHERE base_name IS NULL OR TRIM(base_name) = ''").ok();
+        if let Some(mut stmt) = stmt {
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
+    if !unpopulated_1337.is_empty() {
+        if let Ok(mut update_stmt) = conn.prepare("UPDATE torrents_1337x SET base_name = ? WHERE id = ?") {
+            for (id, name) in unpopulated_1337 {
+                let base = crate::scanner::base_game_name(&name);
+                let _ = update_stmt.execute(params![base, id]);
+            }
+        }
+    }
 
     // 7. Epic 免费游戏表
     conn.execute(
@@ -252,13 +298,44 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             date TEXT,
             fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             published_ts INTEGER DEFAULT 0,
-            comments INTEGER DEFAULT 0
+            comments INTEGER DEFAULT 0,
+            base_name TEXT
         )",
         [],
     )?;
 
     // Add comments column if not exists
     conn.execute("ALTER TABLE skidrow_reloaded ADD COLUMN comments INTEGER DEFAULT 0", []).ok();
+    // Add base_name column if not exists
+    conn.execute("ALTER TABLE skidrow_reloaded ADD COLUMN base_name TEXT", []).ok();
+
+    // 自动为已有但缺少 base_name 的记录补充清洗后的 base_name
+    let unpopulated: Vec<(String, String)> = {
+        let stmt = conn.prepare("SELECT id, title FROM skidrow_reloaded WHERE base_name IS NULL OR TRIM(base_name) = ''").ok();
+        if let Some(mut stmt) = stmt {
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .ok()
+                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    };
+    if !unpopulated.is_empty() {
+        if let Ok(mut update_stmt) = conn.prepare("UPDATE skidrow_reloaded SET base_name = ? WHERE id = ?") {
+            let _ = conn.execute_batch("BEGIN TRANSACTION;");
+            for (id, title) in unpopulated {
+                let base = crate::scanner::base_game_name(&title);
+                let _ = update_stmt.execute(params![base, id]);
+            }
+            let _ = conn.execute_batch("COMMIT;");
+        }
+    }
+
+    // 为 base_name 建立索引以加速多表关联查询 (LEFT JOIN steam_db.steam_cache)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_games_base_name ON games(base_name)", []).ok();
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sr_base_name ON skidrow_reloaded(base_name)", []).ok();
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_1337_base_name ON torrents_1337x(base_name)", []).ok();
 
     // Add status column if not exists (for existing databases)
     conn.execute("ALTER TABLE steam_free_games ADD COLUMN status TEXT DEFAULT '活跃'", []).ok();
@@ -1029,13 +1106,20 @@ pub struct Torrent1337x {
     pub uploader: String,
     pub uploader_url: String,
     pub published_ts: i64,
+    pub base_name: Option<String>,
+    pub appid: Option<i64>,
+    pub review_score_desc: Option<i32>,
+    pub positive_percent: Option<i64>,
+    pub total_reviews: Option<i64>,
 }
 
 pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
     let mut stmt = conn.prepare(
-        "SELECT id, torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, published_ts
-         FROM torrents_1337x
-         ORDER BY published_ts DESC, id ASC"
+        "SELECT t.id, t.torrent_id, t.name, t.url, t.seeds, t.leeches, t.date, t.size, t.uploader, t.uploader_url, t.published_ts,
+                t.base_name, s.appid, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews
+         FROM torrents_1337x t
+         LEFT JOIN steam_db.steam_cache s ON t.base_name = s.base_name
+         ORDER BY t.published_ts DESC, t.id ASC"
     )?;
 
     let rows = stmt.query_map([], |row| {
@@ -1051,6 +1135,11 @@ pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
             uploader: row.get(8)?,
             uploader_url: row.get(9)?,
             published_ts: row.get(10).unwrap_or(0),
+            base_name: row.get(11)?,
+            appid: row.get(12)?,
+            review_score_desc: row.get(13)?,
+            positive_percent: row.get(14)?,
+            total_reviews: row.get(15)?,
         })
     })?;
 
@@ -1068,7 +1157,7 @@ pub fn get_db_path() -> std::path::PathBuf {
     exe_path
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 /// TorrentSR represents a record from the skidrow_reloaded table
 pub struct TorrentSR {
     pub id: String,
@@ -1080,14 +1169,21 @@ pub struct TorrentSR {
     pub fetched_at: String,
     pub published_ts: i64,
     pub comments: i32,
+    pub base_name: Option<String>,
+    pub appid: Option<i64>,
+    pub review_score_desc: Option<i32>,
+    pub positive_percent: Option<i64>,
+    pub total_reviews: Option<i64>,
 }
 
-/// Fetches records from the skidrow_reloaded table
+/// Fetches records from the skidrow_reloaded table with Steam reviews joined
 pub fn get_torrents_sr(conn: &Connection) -> Result<Vec<TorrentSR>> {
     let mut stmt = conn.prepare(
-        "SELECT id, title, url, image_url, category, date, fetched_at, published_ts, comments
-         FROM skidrow_reloaded 
-         ORDER BY published_ts DESC"
+        "SELECT sr.id, sr.title, sr.url, sr.image_url, sr.category, sr.date, sr.fetched_at, sr.published_ts, sr.comments,
+                sr.base_name, s.appid, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews
+         FROM skidrow_reloaded sr
+         LEFT JOIN steam_db.steam_cache s ON sr.base_name = s.base_name
+         ORDER BY sr.published_ts DESC"
     )?;
     
     let iter = stmt.query_map([], |row| {
@@ -1101,6 +1197,11 @@ pub fn get_torrents_sr(conn: &Connection) -> Result<Vec<TorrentSR>> {
             fetched_at: row.get(6)?,
             published_ts: row.get(7).unwrap_or(0),
             comments: row.get(8).unwrap_or(0),
+            base_name: row.get(9)?,
+            appid: row.get(10)?,
+            review_score_desc: row.get(11)?,
+            positive_percent: row.get(12)?,
+            total_reviews: row.get(13)?,
         })
     })?;
 

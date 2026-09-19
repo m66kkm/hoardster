@@ -99,8 +99,9 @@ pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> R
     Ok(())
 }
 
-/// 独立的 Steam 游戏信息获取服务接口
-pub fn fetch_steam_game_info(client: &Client, base_name: &str, lang: &str) -> Option<SteamCacheEntry> {
+/// 独立的 Steam 游戏信息获取服务接口（返回结果与是否触发403/429频控标识）
+pub fn fetch_steam_game_info_ext(client: &Client, base_name: &str, lang: &str) -> (Option<SteamCacheEntry>, bool) {
+    let mut got_403 = false;
     let encoded = urlencoding::encode(base_name);
     let search_url = format!("https://store.steampowered.com/api/storesearch/?term={}&l={}&cc=CN", encoded, lang);
 
@@ -117,115 +118,37 @@ pub fn fetch_steam_game_info(client: &Client, base_name: &str, lang: &str) -> Op
         genres: None,
     };
 
+    let mut app_info: Option<(i64, String, String)> = None; // (app_id, name, tiny_image)
+
+    // 1. 优先尝试 Steam 商店搜索接口
     if let Ok(res) = client.get(&search_url).send() {
-        if let Ok(res_str) = res.text() {
-            if let Ok(res_json) = serde_json::from_str::<Value>(&res_str) {
-                if let Some(items) = res_json.get("items").and_then(|i| i.as_array()) {
-                    if !items.is_empty() {
-                        let mut best_match = None;
-                        for item in items {
-                            if item.get("type").and_then(|t| t.as_str()) == Some("app") {
-                                let name_str = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_lowercase();
-                                if name_str == base_name.to_lowercase() {
-                                    best_match = Some(item);
-                                    break;
-                                }
-                            }
-                        }
-                        if best_match.is_none() {
+        if res.status() == reqwest::StatusCode::FORBIDDEN || res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            got_403 = true;
+        } else if res.status().is_success() {
+            if let Ok(res_str) = res.text() {
+                if let Ok(res_json) = serde_json::from_str::<Value>(&res_str) {
+                    if let Some(items) = res_json.get("items").and_then(|i| i.as_array()) {
+                        if !items.is_empty() {
+                            let mut best_match = None;
                             for item in items {
                                 if item.get("type").and_then(|t| t.as_str()) == Some("app") {
-                                    best_match = Some(item);
-                                    break;
+                                    let name_str = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_lowercase();
+                                    if name_str == base_name.to_lowercase() {
+                                        best_match = Some(item);
+                                        break;
+                                    }
                                 }
                             }
-                        }
-                        if best_match.is_none() {
-                            best_match = Some(&items[0]);
-                        }
+                            if best_match.is_none() {
+                                best_match = items.iter().find(|i| i.get("type").and_then(|t| t.as_str()) == Some("app")).or_else(|| items.first());
+                            }
 
-                        if let Some(best) = best_match {
-                            if let Some(app_id) = best.get("id").and_then(|id| id.as_i64()) {
-                                entry.appid = Some(app_id);
-                                entry.name = best.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
-                                
-                                let tiny_image = best.get("tiny_image").and_then(|t| t.as_str()).unwrap_or("");
-                                let mut best_cover_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id);
-                                
-                                // Parse hash from tiny_image (e.g. .../apps/123/HASH/capsule...)
-                                if let Some(apps_idx) = tiny_image.find(&format!("/apps/{}/", app_id)) {
-                                    let remainder = &tiny_image[apps_idx + format!("/apps/{}/", app_id).len()..];
-                                    if let Some(slash_idx) = remainder.find('/') {
-                                        let hash = &remainder[..slash_idx];
-                                        let hash_library_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/{}/library_600x900_2x.jpg", app_id, hash);
-                                        
-                                        // Try HEAD request for hash_library_url
-                                        if let Ok(res) = client.head(&hash_library_url).send() {
-                                            if res.status().is_success() {
-                                                best_cover_url = hash_library_url;
-                                            } else {
-                                                // Try without hash (legacy) or fallback to tiny_image
-                                                if let Ok(res2) = client.head(&best_cover_url).send() {
-                                                    if !res2.status().is_success() {
-                                                        best_cover_url = tiny_image.to_string();
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // No hash found, try legacy library URL, fallback to tiny_image
-                                    if let Ok(res2) = client.head(&best_cover_url).send() {
-                                        if !res2.status().is_success() && !tiny_image.is_empty() {
-                                            best_cover_url = tiny_image.to_string();
-                                        }
-                                    }
+                            if let Some(best) = best_match {
+                                if let Some(app_id) = best.get("id").and_then(|id| id.as_i64()) {
+                                    let name = best.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                                    let tiny = best.get("tiny_image").and_then(|t| t.as_str()).unwrap_or("").to_string();
+                                    app_info = Some((app_id, name, tiny));
                                 }
-                                
-                                let cover_url = best_cover_url;
-                                // 获取详情
-                                let details_url = format!("https://store.steampowered.com/api/appdetails?appids={}&filters=basic,release_date,genres&l={}&cc=CN", app_id, lang);
-                                if let Ok(det_res) = client.get(&details_url).send() {
-                                    if let Ok(det_json) = det_res.json::<Value>() {
-                                        let app_id_str = app_id.to_string();
-                                        if let Some(data) = det_json.get(&app_id_str).and_then(|d| d.get("data")) {
-                                            if let Some(release_date) = data.get("release_date").and_then(|r| r.get("date")).and_then(|d| d.as_str()) {
-                                                entry.release_date = Some(release_date.to_string());
-                                            }
-                                            if let Some(genres) = data.get("genres").and_then(|g| g.as_array()) {
-                                                let genre_names: Vec<String> = genres.iter()
-                                                    .filter_map(|g| g.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
-                                                    .collect();
-                                                if !genre_names.is_empty() {
-                                                    entry.genres = Some(genre_names.join(", "));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // 评价
-                                let review_url = format!("https://store.steampowered.com/appreviews/{}?json=1&l={}", app_id, lang);
-                                if let Ok(rev_res) = client.get(&review_url).send() {
-                                    if let Ok(rev_json) = rev_res.json::<Value>() {
-                                        if let Some(query_summary) = rev_json.get("query_summary") {
-                                            if let Some(score) = query_summary.get("review_score").and_then(|d| d.as_i64()) {
-                                                entry.review_score_desc = Some(score as i32);
-                                            }
-                                            if let Some(pct) = query_summary.get("total_positive").and_then(|t| t.as_f64()) {
-                                                if let Some(total) = query_summary.get("total_reviews").and_then(|t| t.as_f64()) {
-                                                    if total > 0.0 {
-                                                        entry.positive_percent = Some(((pct / total) * 100.0) as i64);
-                                                        entry.total_reviews = Some(total as i64);
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                // 设置封面URL（调用者可据此决定是否下载）
-                                entry.local_cover = Some(cover_url);
                             }
                         }
                     }
@@ -233,6 +156,131 @@ pub fn fetch_steam_game_info(client: &Client, base_name: &str, lang: &str) -> Op
             }
         }
     }
-    
-    Some(entry)
+
+    // 2. 如果商店搜索受限 (如 403 限流) 或未命中，回退到 Steam Community 搜索接口
+    if app_info.is_none() {
+        let comm_url = format!("https://steamcommunity.com/actions/SearchApps/{}", encoded);
+        if let Ok(comm_res) = client.get(&comm_url).send() {
+            if comm_res.status() == reqwest::StatusCode::FORBIDDEN || comm_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                got_403 = true;
+            } else if comm_res.status().is_success() {
+                if let Ok(comm_json) = comm_res.json::<Value>() {
+                    if let Some(arr) = comm_json.as_array() {
+                        if !arr.is_empty() {
+                            let mut best = None;
+                            for item in arr {
+                                let name_str = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_lowercase();
+                                if name_str == base_name.to_lowercase() {
+                                    best = Some(item);
+                                    break;
+                                }
+                            }
+                            if best.is_none() {
+                                best = arr.first();
+                            }
+                            if let Some(item) = best {
+                                if let Some(id_str) = item.get("appid").and_then(|i| i.as_str()) {
+                                    if let Ok(app_id) = id_str.parse::<i64>() {
+                                        let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                                        let logo = item.get("logo").and_then(|l| l.as_str()).unwrap_or("").to_string();
+                                        app_info = Some((app_id, name, logo));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 若依然未找到匹配游戏，直接返回
+    let (app_id, app_name, tiny_image) = match app_info {
+        Some(info) => info,
+        None => return (None, got_403),
+    };
+
+    entry.appid = Some(app_id);
+    entry.name = Some(app_name);
+
+    // 解析封面图 URL
+    let mut best_cover_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id);
+    if let Some(apps_idx) = tiny_image.find(&format!("/apps/{}/", app_id)) {
+        let remainder = &tiny_image[apps_idx + format!("/apps/{}/", app_id).len()..];
+        if let Some(slash_idx) = remainder.find('/') {
+            let hash = &remainder[..slash_idx];
+            let hash_library_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/{}/library_600x900_2x.jpg", app_id, hash);
+            if let Ok(res) = client.head(&hash_library_url).send() {
+                if res.status().is_success() {
+                    best_cover_url = hash_library_url;
+                } else if let Ok(res2) = client.head(&best_cover_url).send() {
+                    if !res2.status().is_success() && !tiny_image.is_empty() {
+                        best_cover_url = tiny_image.clone();
+                    }
+                }
+            }
+        }
+    } else if let Ok(res2) = client.head(&best_cover_url).send() {
+        if !res2.status().is_success() && !tiny_image.is_empty() {
+            best_cover_url = tiny_image;
+        }
+    }
+    entry.local_cover = Some(best_cover_url);
+
+    // 获取游戏详情（发行日期、流派）
+    let details_url = format!("https://store.steampowered.com/api/appdetails?appids={}&filters=basic,release_date,genres&l={}&cc=CN", app_id, lang);
+    if let Ok(det_res) = client.get(&details_url).send() {
+        if det_res.status() == reqwest::StatusCode::FORBIDDEN || det_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            got_403 = true;
+        } else if det_res.status().is_success() {
+            if let Ok(det_json) = det_res.json::<Value>() {
+                let app_id_str = app_id.to_string();
+                if let Some(data) = det_json.get(&app_id_str).and_then(|d| d.get("data")) {
+                    if let Some(release_date) = data.get("release_date").and_then(|r| r.get("date")).and_then(|d| d.as_str()) {
+                        entry.release_date = Some(release_date.to_string());
+                    }
+                    if let Some(genres) = data.get("genres").and_then(|g| g.as_array()) {
+                        let genre_names: Vec<String> = genres.iter()
+                            .filter_map(|g| g.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
+                            .collect();
+                        if !genre_names.is_empty() {
+                            entry.genres = Some(genre_names.join(", "));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 获取评价（好评率与描述）
+    let review_url = format!("https://store.steampowered.com/appreviews/{}?json=1&l={}&purchase_type=all", app_id, lang);
+    if let Ok(rev_res) = client.get(&review_url).send() {
+        if rev_res.status() == reqwest::StatusCode::FORBIDDEN || rev_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            got_403 = true;
+        } else if rev_res.status().is_success() {
+            if let Ok(rev_json) = rev_res.json::<Value>() {
+                if let Some(query_summary) = rev_json.get("query_summary") {
+                    let score = query_summary.get("review_score").and_then(|d| d.as_i64()).unwrap_or(0);
+                    entry.review_score_desc = Some(score as i32);
+                    let total = query_summary.get("total_reviews").and_then(|t| t.as_f64()).unwrap_or(0.0);
+                    let pct = query_summary.get("total_positive").and_then(|t| t.as_f64()).unwrap_or(0.0);
+                    
+                    if total >= 10.0 && score > 0 {
+                        entry.positive_percent = Some(((pct / total) * 100.0) as i64);
+                        entry.total_reviews = Some(total as i64);
+                    } else if total > 0.0 {
+                        entry.total_reviews = Some(total as i64);
+                        entry.positive_percent = None;
+                    }
+                }
+            }
+        }
+    }
+
+    (Some(entry), got_403)
+}
+
+/// 保持原签名的兼容入口
+pub fn fetch_steam_game_info(client: &Client, base_name: &str, lang: &str) -> Option<SteamCacheEntry> {
+    fetch_steam_game_info_ext(client, base_name, lang).0
 }

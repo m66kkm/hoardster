@@ -23,7 +23,7 @@ export function useScrape({ target = "1337x", mode = "latest", onComplete }: Use
   const startScrape = useCallback(async () => {
     setIsScraping(true);
     setScrapeProgress(0);
-    setScrapeMessage("初始化 1337x 数据同步任务...");
+    setScrapeMessage(target === "sr" ? "初始化 Skidrow/Reloaded 数据同步任务..." : "初始化 1337x 数据同步任务...");
 
     let unlisten: (() => void) | null = null;
     try {
@@ -49,7 +49,7 @@ export function useScrape({ target = "1337x", mode = "latest", onComplete }: Use
         unlisten();
       }
     }
-  }, [onComplete]);
+  }, [target, mode, onComplete]);
 
   const cancelScrape = useCallback(async () => {
     try {

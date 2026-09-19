@@ -148,11 +148,6 @@ async fn fetch_steam_game_info_command(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, db::DbState>,
 ) -> Result<Option<crate::steam_service::SteamCacheEntry>, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
     // 获取语言设置
     let lang = {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -168,9 +163,18 @@ async fn fetch_steam_game_info_command(
     covers_dir.push("covers");
     let _ = std::fs::create_dir_all(&covers_dir);
 
-    // 由于 reqwest::blocking 是同步的，我们需要在阻塞线程中运行
-    let result = tauri::async_runtime::spawn_blocking(move || {
-        let mut entry = crate::steam_service::fetch_steam_game_info(&client, &base_name_clone, &lang)?;
+    // 由于 reqwest::blocking 是同步的，我们需要在阻塞线程中创建和运行 Client
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<Option<crate::steam_service::SteamCacheEntry>, String> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        let mut entry = match crate::steam_service::fetch_steam_game_info(&client, &base_name_clone, &lang) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
         
         // 下载封面图
         if let Some(cover_url) = entry.local_cover.clone() {
@@ -211,10 +215,10 @@ async fn fetch_steam_game_info_command(
                 }
             }
         }
-        Some(entry)
+        Ok(Some(entry))
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())??;
 
     if let Some(entry) = result {
         let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -413,6 +417,7 @@ fn parse_page_html(html: &str) -> Vec<db::Torrent1337x> {
                 .unwrap_or_default();
             
             let published_ts = parse_1337x_date(&date);
+            let base_name = Some(crate::scanner::base_game_name(&name));
 
             torrents.push(db::Torrent1337x {
                 id: None,
@@ -426,10 +431,407 @@ fn parse_page_html(html: &str) -> Vec<db::Torrent1337x> {
                 uploader,
                 uploader_url,
                 published_ts,
+                base_name,
+                appid: None,
+                review_score_desc: None,
+                positive_percent: None,
+                total_reviews: None,
             });
         }
     }
     torrents
+}
+
+fn sync_steam_reviews_blocking(
+    app_handle: tauri::AppHandle,
+    event_name: String,
+    missing_games: Vec<String>,
+    cancel_flag: Arc<AtomicBool>,
+) -> Result<bool, String> {
+    use tauri::Emitter;
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicUsize;
+    use std::time::{Duration, Instant};
+
+    let total_missing = missing_games.len();
+    if total_missing == 0 {
+        return Ok(false);
+    }
+
+    // 1. 读取配置文件中设置的线程数与延迟（不强制写死限流值）
+    let (threads, delay_ms, language) = {
+        if let Ok(conn) = crate::db::get_connection() {
+            let t_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_threads'", [], |r| r.get(0)).unwrap_or_else(|_| "10".to_string());
+            let d_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_delay_ms'", [], |r| r.get(0)).unwrap_or_else(|_| "300".to_string());
+            let l_str: String = conn.query_row("SELECT value FROM config WHERE key = 'language'", [], |r| r.get(0)).unwrap_or_else(|_| "schinese".to_string());
+            (
+                t_str.parse::<usize>().unwrap_or(10).max(1).min(20),
+                d_str.parse::<u64>().unwrap_or(300),
+                l_str,
+            )
+        } else {
+            (10, 300, "schinese".to_string())
+        }
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // 任务队列：(base_name, retry_count)
+    let queue: Arc<Mutex<VecDeque<(String, usize)>>> = Arc::new(Mutex::new(
+        missing_games.into_iter().map(|name| (name, 0)).collect()
+    ));
+
+    // 自适应频控控制器：当出现 403 时降为单线程保护期 1 分钟；保护期恢复时每 1 分钟 +1 并发，若 +1 后遇 403 则回滚 -1
+    struct ThrottleController {
+        max_threads: usize,
+        current_threads: usize,
+        in_protective_ramp: bool,
+        last_change: Instant,
+        last_403_event: Instant,
+    }
+
+    impl ThrottleController {
+        fn new(max_threads: usize) -> Self {
+            Self {
+                max_threads,
+                current_threads: max_threads,
+                in_protective_ramp: false,
+                last_change: Instant::now(),
+                last_403_event: Instant::now() - Duration::from_secs(100),
+            }
+        }
+
+        /// 检查是否平稳运行满 1 分钟；若是且处于保护恢复期，则并发 +1，直到恢复至配置值
+        fn check_ramp(&mut self) -> Option<(usize, String)> {
+            if self.in_protective_ramp {
+                if self.last_change.elapsed() >= Duration::from_secs(60) {
+                    self.last_change = Instant::now();
+                    self.current_threads += 1;
+                    if self.current_threads >= self.max_threads {
+                        self.current_threads = self.max_threads;
+                        self.in_protective_ramp = false;
+                        Some((
+                            self.current_threads,
+                            format!(
+                                "Steam 频控完全解除，并发已恢复至配置值 ({} 线程)",
+                                self.max_threads
+                            ),
+                        ))
+                    } else {
+                        Some((
+                            self.current_threads,
+                            format!(
+                                "Steam 保护期平稳运行1分钟，并发提升至 {} / {} 线程，将以新并发继续观察1分钟",
+                                self.current_threads, self.max_threads
+                            ),
+                        ))
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
+
+        /// 遭遇 403 频控时的降级 / 回滚逻辑
+        fn on_403(&mut self, base_name: &str) -> (usize, String) {
+            let now = Instant::now();
+            // 防短时间突发多次 403 导致并发连续骤降（3秒内的 403 视为同一次频控突发）
+            let is_same_burst = self.last_403_event.elapsed() < Duration::from_secs(3);
+            self.last_403_event = now;
+
+            if !self.in_protective_ramp {
+                // 首次遭遇 403：进入保护期，主动降为 1 线程并发
+                self.in_protective_ramp = true;
+                self.current_threads = 1;
+                self.last_change = now;
+                (
+                    1,
+                    format!(
+                        "⚠️ 遭遇 Steam 频控(403)，已进入保护期降为单线程，将持续运行1分钟: {}",
+                        base_name
+                    ),
+                )
+            } else {
+                // 已在保护恢复期中，提升后再次遭遇 403：回滚到 -1 的状态
+                let old = self.current_threads;
+                if !is_same_burst {
+                    self.current_threads = self.current_threads.saturating_sub(1).max(1);
+                }
+                self.last_change = now; // 重置当前并发档位的1分钟观察计时
+
+                if old > 1 {
+                    (
+                        self.current_threads,
+                        format!(
+                            "⚠️ 并发提升至 {} 线程时再次遭遇 403，已回滚至 {} 线程并持续1分钟: {}",
+                            old, self.current_threads, base_name
+                        ),
+                    )
+                } else {
+                    (
+                        1,
+                        format!(
+                            "⚠️ 单线程保护期内仍有 403 频控，已重置1分钟冷却计时: {}",
+                            base_name
+                        ),
+                    )
+                }
+            }
+        }
+
+        fn get_current_threads(&self) -> usize {
+            self.current_threads
+        }
+
+        fn is_ramping(&self) -> bool {
+            self.in_protective_ramp
+        }
+    }
+
+    let throttle_ctrl = Arc::new(Mutex::new(ThrottleController::new(threads)));
+    let active_tasks = Arc::new(AtomicUsize::new(0));
+
+    let covers_dir = {
+        let mut p = std::env::current_exe().unwrap_or_default();
+        p.pop();
+        p.push("covers");
+        let _ = std::fs::create_dir_all(&p);
+        Arc::new(p)
+    };
+
+    enum WorkerMessage {
+        StatusNotification {
+            message: String,
+        },
+        ItemProcessed {
+            base_name: String,
+            entry: Option<crate::steam_service::SteamCacheEntry>,
+            current_concurrency: usize,
+            is_ramping: bool,
+        },
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel::<WorkerMessage>();
+
+    let mut thread_handles = Vec::new();
+    for thread_idx in 0..threads {
+        let tx_clone = tx.clone();
+        let queue_clone = Arc::clone(&queue);
+        let cancel_clone = Arc::clone(&cancel_flag);
+        let throttle_ctrl_clone = Arc::clone(&throttle_ctrl);
+        let active_tasks_clone = Arc::clone(&active_tasks);
+        let client_clone = client.clone();
+        let lang = language.clone();
+        let covers_dir_clone = Arc::clone(&covers_dir);
+
+        let handle = std::thread::spawn(move || {
+            loop {
+                if cancel_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                // 检查自适应爬坡（满1分钟 +1 并发）
+                let (current_threads, is_ramping) = {
+                    let mut ctrl = throttle_ctrl_clone.lock().unwrap();
+                    let ramp_msg = ctrl.check_ramp();
+                    let cur = ctrl.get_current_threads();
+                    let ramping = ctrl.is_ramping();
+                    drop(ctrl);
+                    if let Some((_c, msg)) = ramp_msg {
+                        let _ = tx_clone.send(WorkerMessage::StatusNotification { message: msg });
+                    }
+                    (cur, ramping)
+                };
+
+                // 若当前线程号超出当前允许的并发限制，休眠等待
+                if thread_idx >= current_threads {
+                    // 若所有任务均已结束且队列为空，无须继续等待，直接退出
+                    let is_done = {
+                        let q = queue_clone.lock().unwrap();
+                        q.is_empty() && active_tasks_clone.load(Ordering::SeqCst) == 0
+                    };
+                    if is_done {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+
+                // 尝试提取下一个待抓取游戏
+                let task = {
+                    let mut q = queue_clone.lock().unwrap();
+                    q.pop_front()
+                };
+
+                let (base_name, retry_count) = match task {
+                    Some(item) => {
+                        active_tasks_clone.fetch_add(1, Ordering::SeqCst);
+                        item
+                    }
+                    None => {
+                        // 队列暂空：若仍有线程在处理任务（可能因 403 重新入队），则等待片刻
+                        if active_tasks_clone.load(Ordering::SeqCst) > 0 {
+                            std::thread::sleep(Duration::from_millis(100));
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                };
+
+                // 根据当前并发保护状态调整请求延迟
+                let sleep_ms = if is_ramping && current_threads == 1 {
+                    delay_ms.max(1000)
+                } else if is_ramping {
+                    delay_ms.max(500)
+                } else {
+                    delay_ms
+                };
+                if sleep_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(sleep_ms));
+                }
+
+                if cancel_clone.load(Ordering::Relaxed) {
+                    active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
+                    break;
+                }
+
+                let (maybe_entry, got_403) = crate::steam_service::fetch_steam_game_info_ext(&client_clone, &base_name, &lang);
+
+                if got_403 {
+                    // 遭遇 403：触发降级或回滚（+1后遇403则回滚到 -1）
+                    let notify_msg = {
+                        let mut ctrl = throttle_ctrl_clone.lock().unwrap();
+                        let (_c, msg) = ctrl.on_403(&base_name);
+                        msg
+                    };
+                    let _ = tx_clone.send(WorkerMessage::StatusNotification { message: notify_msg });
+
+                    // 若未达到最大重试次数 (2次)，重新放入队列尾部等待重试
+                    if retry_count < 2 {
+                        {
+                            let mut q = queue_clone.lock().unwrap();
+                            q.push_back((base_name, retry_count + 1));
+                        }
+                        active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(2000));
+                        continue;
+                    }
+                }
+
+                // 处理封面与结果装配
+                let final_entry = if let Some(mut entry) = maybe_entry {
+                    if let Some(app_id) = entry.appid {
+                        let cover_filename = format!("{}.jpg", app_id);
+                        let local_path = covers_dir_clone.join(&cover_filename);
+                        if local_path.exists() {
+                            entry.local_cover = Some(format!("covers/{}", cover_filename));
+                        } else {
+                            let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
+                            if let Ok(img_res) = client_clone.get(&fallback_url).send() {
+                                if img_res.status().is_success() {
+                                    if let Ok(img_bytes) = img_res.bytes() {
+                                        let _ = std::fs::write(&local_path, &img_bytes);
+                                        entry.local_cover = Some(format!("covers/{}", cover_filename));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some(entry)
+                } else {
+                    None
+                };
+
+                let _ = tx_clone.send(WorkerMessage::ItemProcessed {
+                    base_name,
+                    entry: final_entry,
+                    current_concurrency: current_threads,
+                    is_ramping,
+                });
+
+                active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        thread_handles.push(handle);
+    }
+
+    drop(tx);
+    drop(client); // 释放 client 资源
+
+    let mut processed = 0;
+    let conn = crate::db::get_connection().map_err(|e| e.to_string())?;
+
+    for msg in rx {
+        if cancel_flag.load(Ordering::Relaxed) {
+            let _ = app_handle.emit(&event_name, ScrapeProgress {
+                current_page: processed,
+                total_pages: total_missing as u32,
+                message: "Steam 信息获取已被用户取消".to_string(),
+                status: "error".to_string(),
+            });
+            for handle in thread_handles {
+                let _ = handle.join();
+            }
+            return Ok(true);
+        }
+
+        match msg {
+            WorkerMessage::StatusNotification { message } => {
+                let _ = app_handle.emit(&event_name, ScrapeProgress {
+                    current_page: processed,
+                    total_pages: total_missing as u32,
+                    message,
+                    status: "fetching".to_string(),
+                });
+            }
+            WorkerMessage::ItemProcessed { base_name, entry, current_concurrency, is_ramping } => {
+                processed += 1;
+                let ramp_tag = if is_ramping {
+                    format!(" [保护恢复中: {}/{}线程]", current_concurrency, threads)
+                } else {
+                    String::new()
+                };
+                let _ = app_handle.emit(&event_name, ScrapeProgress {
+                    current_page: processed,
+                    total_pages: total_missing as u32,
+                    message: format!("正在向 Steam 获取游戏评价 ({} / {}){}: {}", processed, total_missing, ramp_tag, base_name),
+                    status: "fetching".to_string(),
+                });
+
+                if let Some(entry) = entry {
+                    if entry.appid.is_some() {
+                        for attempt in 0..3 {
+                            match crate::db::insert_steam_cache_entry(&conn, &entry) {
+                                Ok(_) => break,
+                                Err(e) => {
+                                    let err_str = e.to_string();
+                                    if err_str.contains("locked") && attempt < 2 {
+                                        std::thread::sleep(Duration::from_millis(300 * (attempt as u64 + 1)));
+                                    } else {
+                                        eprintln!("Error inserting steam cache for {}: {}", base_name, e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for handle in thread_handles {
+        let _ = handle.join();
+    }
+
+    Ok(false)
 }
 
 #[tauri::command]
@@ -542,10 +944,11 @@ async fn scrape_1337x_command(
                             local_consecutive = 0;
                         }
                         
+                        let base_name = t.base_name.as_deref().unwrap_or("");
                         let rows_affected = tx.execute(
                             "INSERT OR IGNORE INTO torrents_1337x (
-                                torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, fetched_at, published_ts
-                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                torrent_id, name, url, seeds, leeches, date, size, uploader, uploader_url, fetched_at, published_ts, base_name
+                             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                             params![
                                 t.torrent_id,
                                 t.name,
@@ -558,6 +961,7 @@ async fn scrape_1337x_command(
                                 t.uploader_url,
                                 &session_time_clone,
                                 t.published_ts,
+                                base_name,
                             ],
                         ).unwrap_or(0);
                         
@@ -580,7 +984,99 @@ async fn scrape_1337x_command(
         sleep(Duration::from_millis(200)).await;
     }
 
-    Ok(format!("更新完成！本次同步新增了 {} 个游戏种子。", total_new_added))
+    // 阶段二：当游戏清单获取完成后，和游戏索引模块一致，去 Steam 获取评价信息
+    let event_name = format!("scrape-progress-{}", mode);
+    if cancel_flag.load(Ordering::Relaxed) {
+        let _ = app_handle.emit(&event_name, ScrapeProgress {
+            current_page: page - 1,
+            total_pages,
+            message: "抓取任务已被用户取消".to_string(),
+            status: "error".to_string(),
+        });
+        return Ok("抓取任务已被用户取消".to_string());
+    }
+
+    // 自动用最新清洗规则校准 1337x 记录的 base_name
+    if let Ok(conn) = crate::db::get_connection() {
+        let all_rows: Vec<(i64, String, Option<String>)> = {
+            if let Ok(mut stmt) = conn.prepare("SELECT id, name, base_name FROM torrents_1337x") {
+                if let Ok(rows) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
+                    rows.filter_map(|r| r.ok()).collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        };
+        if let Ok(mut update_stmt) = conn.prepare("UPDATE torrents_1337x SET base_name = ? WHERE torrent_id = ?") {
+            let _ = conn.execute_batch("BEGIN TRANSACTION;");
+            for (id, name, existing_base) in all_rows {
+                let base = crate::scanner::base_game_name(&name);
+                if existing_base.as_deref() != Some(&base) {
+                    let _ = update_stmt.execute(params![base, id]);
+                }
+            }
+            let _ = conn.execute_batch("COMMIT;");
+        }
+    }
+
+    // 找出尚未在 steam_cache 中缓存的 1337x 游戏 base_name
+    let missing_games: Vec<String> = {
+        if let Ok(conn) = crate::db::get_connection() {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT t.base_name 
+                 FROM torrents_1337x t
+                 LEFT JOIN steam_db.steam_cache s ON t.base_name = s.base_name
+                 WHERE t.base_name IS NOT NULL 
+                   AND TRIM(t.base_name) != '' 
+                   AND (s.base_name IS NULL OR s.appid IS NULL)
+                 GROUP BY t.base_name
+                 ORDER BY MAX(t.published_ts) DESC"
+            ) {
+                if let Ok(rows) = stmt.query_map([], |r| r.get(0)) {
+                    rows.filter_map(|r| r.ok()).collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    };
+
+    let total_missing = missing_games.len();
+    if total_missing > 0 {
+        let app_handle_clone = app_handle.clone();
+        let event_name_clone = event_name.clone();
+        let cancel_flag_clone = cancel_flag.clone();
+
+        let was_cancelled = tokio::task::spawn_blocking(move || {
+            sync_steam_reviews_blocking(app_handle_clone, event_name_clone, missing_games, cancel_flag_clone)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+
+        if was_cancelled {
+            return Ok("Steam 信息获取已被用户取消".to_string());
+        }
+    }
+
+    let _ = app_handle.emit(&event_name, ScrapeProgress {
+        current_page: 100,
+        total_pages: 100,
+        message: "1337x 数据与 Steam 评价同步完成！".to_string(),
+        status: "complete".to_string(),
+    });
+
+    let msg = if total_new_added > 0 {
+        format!("更新完成！本次同步新增了 {} 个游戏种子，并已同步 Steam 评价。", total_new_added)
+    } else {
+        "更新完成！1337x 游戏列表已是最新，并已同步 Steam 评价。".to_string()
+    };
+    Ok(msg)
 }
 
 #[tauri::command]
@@ -652,6 +1148,8 @@ fn parse_sr_html(html: &str) -> Vec<db::TorrentSR> {
             comments = c[1].parse::<i32>().unwrap_or(0);
         }
 
+        let base_name = Some(crate::scanner::base_game_name(&title));
+
         torrents.push(db::TorrentSR {
             id,
             title,
@@ -662,6 +1160,11 @@ fn parse_sr_html(html: &str) -> Vec<db::TorrentSR> {
             fetched_at: now_str.clone(),
             published_ts,
             comments,
+            base_name,
+            appid: None,
+            review_score_desc: None,
+            positive_percent: None,
+            total_reviews: None,
         });
     }
     torrents
@@ -782,12 +1285,13 @@ async fn scrape_sr_command(
                             local_consecutive = 0;
                         }
                         
+                        let base_name = t.base_name.as_deref().unwrap_or("");
                         let rows_affected = tx.execute(
-                            "INSERT INTO skidrow_reloaded (id, title, url, image_url, category, date, published_ts, comments) 
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) 
+                            "INSERT INTO skidrow_reloaded (id, title, url, image_url, category, date, published_ts, comments, base_name) 
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) 
                              ON CONFLICT(id) DO UPDATE SET 
-                                title = ?2, url = ?3, image_url = ?4, category = ?5, date = ?6, published_ts = ?7, comments = ?8",
-                            params![t.id, t.title, t.url, t.image_url, t.category, t.date, t.published_ts, t.comments],
+                                title = ?2, url = ?3, image_url = ?4, category = ?5, date = ?6, published_ts = ?7, comments = ?8, base_name = ?9",
+                            params![t.id, t.title, t.url, t.image_url, t.category, t.date, t.published_ts, t.comments, base_name],
                         ).unwrap_or(0);
                         
                         if rows_affected > 0 && !exists {
@@ -811,7 +1315,99 @@ async fn scrape_sr_command(
         sleep(Duration::from_millis(200)).await;
     }
 
-    Ok(format!("更新完成！本次同步新增了 {} 个 Skidrow/Reloaded 游戏发布。", total_new_added))
+    // 阶段二：当游戏清单获取完成后，和游戏索引模块一致，去 Steam 获取评价信息
+    let event_name = "scrape-progress-sr";
+    if cancel_flag.load(Ordering::Relaxed) {
+        let _ = app_handle.emit(event_name, ScrapeProgress {
+            current_page: current_page - 1,
+            total_pages,
+            message: "抓取任务已被用户取消".to_string(),
+            status: "error".to_string(),
+        });
+        return Ok("抓取任务已被用户取消".to_string());
+    }
+
+    // 自动用最新清洗规则校准 Skidrow 记录的 base_name
+    if let Ok(conn) = crate::db::get_connection() {
+        let all_rows: Vec<(String, String, Option<String>)> = {
+            if let Ok(mut stmt) = conn.prepare("SELECT id, title, base_name FROM skidrow_reloaded") {
+                if let Ok(rows) = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))) {
+                    rows.filter_map(|r| r.ok()).collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        };
+        if let Ok(mut update_stmt) = conn.prepare("UPDATE skidrow_reloaded SET base_name = ? WHERE id = ?") {
+            let _ = conn.execute_batch("BEGIN TRANSACTION;");
+            for (id, title, existing_base) in all_rows {
+                let base = crate::scanner::base_game_name(&title);
+                if existing_base.as_deref() != Some(&base) {
+                    let _ = update_stmt.execute(params![base, id]);
+                }
+            }
+            let _ = conn.execute_batch("COMMIT;");
+        }
+    }
+
+    // 找出尚未在 steam_cache 中缓存的 Skidrow 游戏 base_name
+    let missing_games: Vec<String> = {
+        if let Ok(conn) = crate::db::get_connection() {
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT sr.base_name 
+                 FROM skidrow_reloaded sr
+                 LEFT JOIN steam_db.steam_cache s ON sr.base_name = s.base_name
+                 WHERE sr.base_name IS NOT NULL 
+                   AND TRIM(sr.base_name) != '' 
+                   AND (s.base_name IS NULL OR s.appid IS NULL)
+                 GROUP BY sr.base_name
+                 ORDER BY MAX(sr.published_ts) DESC"
+            ) {
+                if let Ok(rows) = stmt.query_map([], |r| r.get(0)) {
+                    rows.filter_map(|r| r.ok()).collect()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    };
+
+    let total_missing = missing_games.len();
+    if total_missing > 0 {
+        let app_handle_clone = app_handle.clone();
+        let event_name_clone = event_name.to_string();
+        let cancel_flag_clone = cancel_flag.clone();
+
+        let was_cancelled = tokio::task::spawn_blocking(move || {
+            sync_steam_reviews_blocking(app_handle_clone, event_name_clone, missing_games, cancel_flag_clone)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+
+        if was_cancelled {
+            return Ok("Steam 信息获取已被用户取消".to_string());
+        }
+    }
+
+    let _ = app_handle.emit(event_name, ScrapeProgress {
+        current_page: 100,
+        total_pages: 100,
+        message: "Skidrow/Reloaded 数据与 Steam 评价同步完成！".to_string(),
+        status: "complete".to_string(),
+    });
+
+    let msg = if total_new_added > 0 {
+        format!("更新完成！本次同步新增了 {} 个 Skidrow/Reloaded 游戏发布，并已同步 Steam 评价。", total_new_added)
+    } else {
+        "更新完成！Skidrow/Reloaded 游戏列表已是最新，并已同步 Steam 评价。".to_string()
+    };
+    Ok(msg)
 }
 
 #[tauri::command]
@@ -858,6 +1454,59 @@ pub fn run() {
             // 注册抓取取消状态到 Tauri 托管状态
             app.manage(ScrapeState {
                 is_cancelled: Arc::new(AtomicBool::new(false)),
+            });
+
+            // 异步后台校准历史记录中的 base_name（使用事务批量处理，耗时仅几毫秒，完全不阻塞应用启动主线程）
+            std::thread::spawn(|| {
+                if let Ok(conn) = db::get_connection() {
+                    let sr_records: Vec<(String, String, Option<String>)> = {
+                        let stmt = conn.prepare("SELECT id, title, base_name FROM skidrow_reloaded").ok();
+                        if let Some(mut stmt) = stmt {
+                            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                                .ok()
+                                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        }
+                    };
+                    if !sr_records.is_empty() {
+                        if let Ok(mut update_stmt) = conn.prepare("UPDATE skidrow_reloaded SET base_name = ? WHERE id = ?") {
+                            let _ = conn.execute_batch("BEGIN TRANSACTION;");
+                            for (id, title, existing_base) in sr_records {
+                                let base = crate::scanner::base_game_name(&title);
+                                if existing_base.as_deref() != Some(&base) {
+                                    let _ = update_stmt.execute(params![base, id]);
+                                }
+                            }
+                            let _ = conn.execute_batch("COMMIT;");
+                        }
+                    }
+
+                    let torrents_records: Vec<(String, String, Option<String>)> = {
+                        let stmt = conn.prepare("SELECT torrent_id, name, base_name FROM torrents_1337x").ok();
+                        if let Some(mut stmt) = stmt {
+                            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                                .ok()
+                                .map(|rows| rows.filter_map(|r| r.ok()).collect())
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        }
+                    };
+                    if !torrents_records.is_empty() {
+                        if let Ok(mut update_stmt) = conn.prepare("UPDATE torrents_1337x SET base_name = ? WHERE torrent_id = ?") {
+                            let _ = conn.execute_batch("BEGIN TRANSACTION;");
+                            for (id, name, existing_base) in torrents_records {
+                                let base = crate::scanner::base_game_name(&name);
+                                if existing_base.as_deref() != Some(&base) {
+                                    let _ = update_stmt.execute(params![base, id]);
+                                }
+                            }
+                            let _ = conn.execute_batch("COMMIT;");
+                        }
+                    }
+                }
             });
 
             Ok(())
