@@ -7,6 +7,7 @@ export interface TabDef {
   id: string;
   icon: LucideIcon;
   labelKey: string;
+  isSpinning?: boolean;
 }
 
 interface TabNavProps {
@@ -46,7 +47,7 @@ export default function TabNav({ tabs, activeTab, onTabChange, rightAction }: Ta
               />
             )}
             <span style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", gap: "0.5rem" }}>
-              <Icon size={15} />
+              <Icon size={15} className={tab.isSpinning ? "animate-spin" : ""} style={tab.isSpinning ? { color: "var(--primary-accent)" } : {}} />
               {t(tab.labelKey)}
             </span>
           </button>

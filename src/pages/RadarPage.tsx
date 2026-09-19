@@ -1,4 +1,4 @@
-import { Radio, Download, Terminal, Gift, Gamepad2 } from "lucide-react";
+import { Radio, Download, Terminal, Gift, Gamepad2, RefreshCw } from "lucide-react";
 
 import TabNav, { type TabDef } from "../components/TabNav";
 import NewsPanel from "../components/NewsPanel";
@@ -8,6 +8,7 @@ import SRPanel from "../components/SRPanel";
 import { useRadarStore } from "../stores/useRadarStore";
 import { useAppStore } from "../stores/useAppStore";
 import { useScrape } from "../hooks/useScrape";
+import { useScrapeStore, getTaskKey } from "../stores/useScrapeStore";
 import EpicGamesPanel from "../components/EpicGamesPanel";
 import SteamGamesPanel from "../components/SteamGamesPanel";
 
@@ -29,12 +30,25 @@ export default function RadarPage() {
     }
   });
 
+  const is1337Scraping = isScraping;
+  const isSrScraping = useScrapeStore((s) => !!s.tasks[getTaskKey("sr")]?.isScraping);
+
   const tabs: TabDef[] = [
     { id: "news", icon: Radio, labelKey: "tabNews" },
     { id: "epic", icon: Gift, labelKey: "tabEpic" },
     { id: "steam", icon: Gamepad2, labelKey: "tabSteam" },
-    { id: "torrents1337", icon: Download, labelKey: "tab1337" },
-    { id: "sr", icon: Terminal, labelKey: "tabSR" }
+    { 
+      id: "torrents1337", 
+      icon: is1337Scraping ? RefreshCw : Download, 
+      labelKey: "tab1337", 
+      isSpinning: is1337Scraping 
+    },
+    { 
+      id: "sr", 
+      icon: isSrScraping ? RefreshCw : Terminal, 
+      labelKey: "tabSR", 
+      isSpinning: isSrScraping 
+    }
   ];
 
 
