@@ -90,12 +90,13 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                     {game.name || game.original_name}
                   </td>
                   <td>
-                    {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" ? (
+                    {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" && Number(game.review_score_desc) > 0 ? (
                       <span className={`rating-text ${getRatingColorClass(game.review_score_desc)}`}>
-                        👍 {game.positive_percent}% ({getReviewScoreText(t, game.review_score_desc)})
+                        {game.positive_percent !== undefined && game.positive_percent !== null && Number(game.positive_percent) > 0 ? `👍 ${game.positive_percent}% ` : ""}
+                        ({getReviewScoreText(t, game.review_score_desc)})
                       </span>
                     ) : (
-                      <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating")}</span>
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating") || "暂无评价"}</span>
                     )}
                   </td>
                   <td>

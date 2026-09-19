@@ -38,12 +38,13 @@ export default function GameDetailRow({ game, onCopyPath, onOpenFolder }: GameDe
         </div>
       </div>
       <div className="detail-right-meta">
-        {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" ? (
+        {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" && Number(game.review_score_desc) > 0 ? (
           <span className={`rating-text ${getRatingColorClass(game.review_score_desc)}`} title={t("steamRatingHover", { percent: game.positive_percent, total: game.total_reviews })}>
-            👍 {game.positive_percent}% ({getReviewScoreText(t, game.review_score_desc)})
+            {game.positive_percent !== undefined && game.positive_percent !== null && Number(game.positive_percent) > 0 ? `👍 ${game.positive_percent}% ` : ""}
+            ({getReviewScoreText(t, game.review_score_desc)})
           </span>
         ) : (
-          <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating")}</span>
+          <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating") || "暂无评价"}</span>
         )}
         <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>{t("releaseLabel")} <span style={{ color: "var(--text-primary)" }}>{game.release_date || "未知"}</span></div>
         <div style={{ fontSize: "0.725rem", color: "var(--text-secondary)", opacity: 0.8 }}>{t("createdLabel")} <span style={{ color: "var(--text-primary)" }}>{game.created || "未知"}</span></div>

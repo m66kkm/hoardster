@@ -74,12 +74,13 @@ export default function FranchisesPanel({ franchises, openAccordions, toggleAcco
                             {g.original_name}
                           </td>
                           <td>
-                            {g.review_score_desc !== undefined && g.review_score_desc !== null && g.review_score_desc !== "" ? (
+                            {g.review_score_desc !== undefined && g.review_score_desc !== null && g.review_score_desc !== "" && Number(g.review_score_desc) > 0 ? (
                               <span className={`rating-text ${getRatingColorClass(g.review_score_desc)}`} title={t("steamRatingHover", { percent: g.positive_percent, total: g.total_reviews })}>
-                                👍 {g.positive_percent}% ({getReviewScoreText(t, g.review_score_desc)})
+                                {g.positive_percent !== undefined && g.positive_percent !== null && Number(g.positive_percent) > 0 ? `👍 ${g.positive_percent}% ` : ""}
+                                ({getReviewScoreText(t, g.review_score_desc)})
                               </span>
                             ) : (
-                              <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating")}</span>
+                              <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating") || "暂无评价"}</span>
                             )}
                           </td>
                           <td>

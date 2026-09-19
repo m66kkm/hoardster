@@ -17,9 +17,11 @@ export default function GameCard({ game, onOpenFolder }: GameCardProps) {
       onClick={() => onOpenFolder(game.full_path)}
       title={`${game.original_name}\nSteam类型: ${game.genres || "未知"}\n文件类别: ${game.type}\n路径: ${game.full_path}\n大小: ${game.size}`}
     >
-      {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" && (
+      {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" && Number(game.review_score_desc) > 0 && (
         <div className={`rating-overlay ${getRatingColorClass(game.review_score_desc)}`}>
-          <span>👍 {game.positive_percent}%</span>
+          {game.positive_percent !== undefined && game.positive_percent !== null && Number(game.positive_percent) > 0 && (
+            <span>👍 {game.positive_percent}%</span>
+          )}
           <span className="rating-desc">{getReviewScoreText(t, game.review_score_desc)}</span>
         </div>
       )}
