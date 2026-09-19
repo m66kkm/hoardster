@@ -1,9 +1,6 @@
 use crate::db::{Game, get_scan_paths, get_steam_cache, get_config, insert_steam_cache_entry, save_scanned_games, insert_scan_history};
-use crate::steam_service::SteamCacheEntry;
-use chrono::Datelike;
 use reqwest::blocking::Client;
 use regex::Regex;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -16,10 +13,14 @@ use rayon::prelude::*;
 lazy_static::lazy_static! {
     static ref DIVIDERS_RE: Regex = Regex::new(r"[\._\-/:;]").unwrap();
     static ref SPACES_RE: Regex = Regex::new(r"\s+").unwrap();
+    static ref BRACKET_CONTENT_RE: Regex = Regex::new(r"\s*[\[\(].*?[\]\)]").unwrap();
     static ref BRACKETS_RE: Regex = Regex::new(r"[\[\]\(\)]").unwrap();
-    static ref VERSION_RE: Regex = Regex::new(r"\bv\s?\d+[\d\s\.]*").unwrap();
-    static ref BUILD_RE: Regex = Regex::new(r"\bbuild\s?\d+").unwrap();
-    static ref YEAR_RE: Regex = Regex::new(r"\b\d{4}\b").unwrap();
+    static ref SCENE_GROUP_RE: Regex = Regex::new(r"(?i)-([a-z0-9_]+)$").unwrap();
+    static ref VERSION_DOTTED_RE: Regex = Regex::new(r"(?i)\bv\s?\d+[\w\.]*\b").unwrap();
+    static ref SEMVER_DOTTED_RE: Regex = Regex::new(r"\b\d+\.\d+\.\d+[\w\.]*\b").unwrap();
+    static ref BUILD_RE: Regex = Regex::new(r"(?i)\bbuild[\s\.]*\d+\b").unwrap();
+    static ref VERSION_SPACED_RE: Regex = Regex::new(r"(?i)\bv\s?\d+(\s+\d+)*\b").unwrap();
+    static ref YEAR_RE: Regex = Regex::new(r"\b(199\d|20[0-2]\d|2030)\b").unwrap();
 }
 
 pub fn clean_name(name: &str) -> String {
@@ -42,7 +43,23 @@ pub fn base_game_name(name: &str) -> String {
         clean = clean[7..].to_string();
     }
     
-    clean = BRACKETS_RE.replace_all(&clean, " ").into_owned();
+    // 1. 剥离末尾的发布组后缀 (如 -P2P, -RUNE, -TENOKE, -0xZeOn, -HYPERVISOR)
+    clean = SCENE_GROUP_RE.replace(&clean, "").into_owned();
+
+    // 2. 剥离中括号和小括号及其中的内容（例如 [FitGirl Repack], (v1.0.5 Release + Bonus OST...)）
+    let stripped = BRACKET_CONTENT_RE.replace_all(&clean, " ").into_owned();
+    if !stripped.trim().is_empty() {
+        clean = stripped;
+    } else {
+        clean = BRACKETS_RE.replace_all(&clean, " ").into_owned();
+    }
+
+    // 3. 在将点号(.)等分隔符替换为空格之前，优先剥离带点号的版本号与构建号！
+    // 避免 v1.0.12.0 被点号分隔符提前切碎为 "v1 0 12 0"，从而留下 "0 12 0" 等脏后缀
+    clean = VERSION_DOTTED_RE.replace_all(&clean, " ").into_owned();
+    clean = SEMVER_DOTTED_RE.replace_all(&clean, " ").into_owned();
+    clean = BUILD_RE.replace_all(&clean, " ").into_owned();
+
     clean = clean.replace('\'', "");
     clean = DIVIDERS_RE.replace_all(&clean, " ").into_owned();
     
@@ -60,7 +77,9 @@ pub fn base_game_name(name: &str) -> String {
         "standard\\s+edition", "hd\\s+edition", "classic\\s+edition", "premium\\s+edition", "hrdc",
         "elamigos", "gog", "3dm", "ali213", "canek77", "wanterlude", "decepticon", "fitgirl", "dodi",
         "early\\s+access", "portable", "dlc\\s+unlocker", "incl\\s+dlc", "with\\s+update", "with\\s+up\\d+",
-        "chs", "cht", "complete\\s+bundle", "bundle", "collection", "steam", "gog\\s+edition", "by\\s+\\w+"
+        "chs", "cht", "complete\\s+bundle", "bundle", "collection", "steam", "gog\\s+edition", "by\\s+\\w+",
+        "tinyiso", "doge", "kaos", "i_know", "anomaly", "simplex", "chronos", "goldberg", "update", "dlc",
+        "0xzeon", "hypervisor"
     ];
     
     for tag in repack_tags {
@@ -70,11 +89,13 @@ pub fn base_game_name(name: &str) -> String {
         }
     }
     
-    clean = VERSION_RE.replace_all(&clean, "").into_owned();
-    clean = BUILD_RE.replace_all(&clean, "").into_owned();
+    // 兜底剥离以空格形式残留的版本号（如 v 1 0 12）
+    clean = VERSION_SPACED_RE.replace_all(&clean, "").into_owned();
+
+    // 剥离常见的发行年份标签（1990-2030），且不误伤如 Cyberpunk 2077 等游戏名
     clean = YEAR_RE.replace_all(&clean, "").into_owned();
+
     clean = SPACES_RE.replace_all(&clean, " ").into_owned();
-    
     clean.trim().to_string()
 }
 
@@ -388,6 +409,7 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         .collect();
 
     let client = Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
         .timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
@@ -432,18 +454,31 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                                 std::thread::sleep(Duration::from_millis(steam_api_delay_ms));
                             }
 
-                            let mut entry = crate::steam_service::fetch_steam_game_info(&client_clone, &base_name, &lang).unwrap();
-                            
-                            // 封面下载逻辑
-                            if let Some(cover_url) = entry.local_cover.clone() {
-                                if let Some(app_id) = entry.appid {
-                                    let cover_filename = format!("{}.jpg", app_id);
-                                    let local_path = covers_dir_clone.join(&cover_filename);
+                            let maybe_entry = crate::steam_service::fetch_steam_game_info(&client_clone, &base_name, &lang);
+                            let entry = if let Some(mut entry) = maybe_entry {
+                                // 封面下载逻辑
+                                if let Some(cover_url) = entry.local_cover.clone() {
+                                    if let Some(app_id) = entry.appid {
+                                        let cover_filename = format!("{}.jpg", app_id);
+                                        let local_path = covers_dir_clone.join(&cover_filename);
 
-                                    let mut download_success = false;
-                                    if let Ok(head_res) = client_clone.head(&cover_url).send() {
-                                        if head_res.status().is_success() {
-                                            if let Ok(img_res) = client_clone.get(&cover_url).send() {
+                                        let mut download_success = false;
+                                        if let Ok(head_res) = client_clone.head(&cover_url).send() {
+                                            if head_res.status().is_success() {
+                                                if let Ok(img_res) = client_clone.get(&cover_url).send() {
+                                                    if img_res.status().is_success() {
+                                                        if let Ok(img_bytes) = img_res.bytes() {
+                                                            let _ = fs::write(&local_path, &img_bytes);
+                                                            download_success = true;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if !download_success {
+                                            let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
+                                            if let Ok(img_res) = client_clone.get(&fallback_url).send() {
                                                 if img_res.status().is_success() {
                                                     if let Ok(img_bytes) = img_res.bytes() {
                                                         let _ = fs::write(&local_path, &img_bytes);
@@ -452,27 +487,18 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                                                 }
                                             }
                                         }
-                                    }
 
-                                    if !download_success {
-                                        let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
-                                        if let Ok(img_res) = client_clone.get(&fallback_url).send() {
-                                            if img_res.status().is_success() {
-                                                if let Ok(img_bytes) = img_res.bytes() {
-                                                    let _ = fs::write(&local_path, &img_bytes);
-                                                    download_success = true;
-                                                }
-                                            }
+                                        if download_success {
+                                            entry.local_cover = Some(format!("covers/{}", cover_filename));
+                                        } else {
+                                            entry.local_cover = None;
                                         }
                                     }
-
-                                    if download_success {
-                                        entry.local_cover = Some(format!("covers/{}", cover_filename));
-                                    } else {
-                                        entry.local_cover = None;
-                                    }
                                 }
-                            }
+                                Some(entry)
+                            } else {
+                                None
+                            };
 
                             let _ = tx_clone.send((g_idx, base_name, entry));
                         }
@@ -485,7 +511,7 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         drop(tx); // drop the original sender
         
         let mut processed = 0;
-        for (_g_idx, base_name, entry) in rx {
+        for (_g_idx, base_name, entry_opt) in rx {
             if cancel_flag.load(Ordering::Relaxed) {
                 let completed_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 let _ = insert_scan_history(
@@ -511,33 +537,37 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                 },
             );
 
-            // Retry up to 3 times on database lock errors
-            for attempt in 0..3 {
-                match insert_steam_cache_entry(&conn, &entry) {
-                    Ok(_) => break,
-                    Err(e) => {
-                        let err_str = e.to_string();
-                        if err_str.contains("locked") && attempt < 2 {
-                            println!("Steam cache insert locked, retrying ({}/3): {}", attempt + 1, base_name);
-                            std::thread::sleep(Duration::from_millis(500 * (attempt as u64 + 1)));
-                        } else {
-                            println!("Error inserting steam cache for {}: {}", base_name, e);
-                            break;
+            if let Some(entry) = entry_opt {
+                if entry.appid.is_some() {
+                    // Retry up to 3 times on database lock errors
+                    for attempt in 0..3 {
+                        match insert_steam_cache_entry(&conn, &entry) {
+                            Ok(_) => break,
+                            Err(e) => {
+                                let err_str = e.to_string();
+                                if err_str.contains("locked") && attempt < 2 {
+                                    println!("Steam cache insert locked, retrying ({}/3): {}", attempt + 1, base_name);
+                                    std::thread::sleep(Duration::from_millis(500 * (attempt as u64 + 1)));
+                                } else {
+                                    println!("Error inserting steam cache for {}: {}", base_name, e);
+                                    break;
+                                }
+                            }
                         }
                     }
+                    // Update raw_scanned so the first scan has the steam data
+                    raw_scanned[_g_idx].appid = entry.appid;
+                    raw_scanned[_g_idx].name = entry.name.clone().or(raw_scanned[_g_idx].name.clone());
+                    raw_scanned[_g_idx].local_cover = entry.local_cover.clone();
+                    raw_scanned[_g_idx].review_score_desc = entry.review_score_desc;
+                    raw_scanned[_g_idx].positive_percent = entry.positive_percent.map(|x| x as i64);
+                    raw_scanned[_g_idx].total_reviews = entry.total_reviews.map(|x| x as i64);
+                    raw_scanned[_g_idx].release_date = entry.release_date.clone();
+                    raw_scanned[_g_idx].genres = entry.genres.clone();
+                    
+                    new_steam_entries += 1;
                 }
             }
-            // Update raw_scanned so the first scan has the steam data
-            raw_scanned[_g_idx].appid = entry.appid;
-            raw_scanned[_g_idx].name = entry.name.clone().or(raw_scanned[_g_idx].name.clone());
-            raw_scanned[_g_idx].local_cover = entry.local_cover.clone();
-            raw_scanned[_g_idx].review_score_desc = entry.review_score_desc;
-            raw_scanned[_g_idx].positive_percent = entry.positive_percent.map(|x| x as i64);
-            raw_scanned[_g_idx].total_reviews = entry.total_reviews.map(|x| x as i64);
-            raw_scanned[_g_idx].release_date = entry.release_date.clone();
-            raw_scanned[_g_idx].genres = entry.genres.clone();
-            
-            new_steam_entries += 1;
         }
     }
 
@@ -580,4 +610,102 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_base_game_name_beast_of_reincarnation() {
+        assert_eq!(
+            base_game_name("Beast of Reincarnation v1.0.12.0-P2P"),
+            "beast of reincarnation"
+        );
+        assert_eq!(
+            base_game_name("Beast.Of.Reincarnation.v1.0.11.0.REPACK-KaOs"),
+            "beast of reincarnation"
+        );
+        assert_eq!(
+            base_game_name("Beast of Reincarnation-RUNE"),
+            "beast of reincarnation"
+        );
+        assert_eq!(
+            base_game_name("PROHIBEAST v1.0.5-P2P"),
+            "prohibeast"
+        );
+        assert_eq!(
+            base_game_name("Cyberpunk 2077 v2.13-GOG"),
+            "cyberpunk 2077"
+        );
+        assert_eq!(
+            base_game_name("Black Myth: Wukong v1.0.8.14823"),
+            "black myth wukong"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn test_user_30_games() {
+        let titles = vec![
+            "PATLABOR the Case Files-GoldBerg",
+            "Corsair Cove v1.1.7.246856-P2P",
+            "Beast of Reincarnation v1.0.12.0-P2P",
+            "Blackwood v20260917-P2P",
+            "The Crust v1.0.11-P2P",
+            "Valheim v1.0.15-P2P",
+            "Tabletop Tavern v1.9.15-P2P",
+            "Drill Core v1.261-P2P",
+            "Backyard Baseball v1.1.0.19.1-P2P",
+            "Astral Ascent v2.6.4-P2P",
+            "Artis Impact v1.20-P2P",
+            "Stolen Realm v1.3.1-P2P",
+            "Reus 2 Jurassic-RUNE",
+            "Scarlet Deer Inn v1.025-P2P",
+            "Ostranauts v1.0.1.4-P2P",
+            "Legends of Dragaea Idle Dungeons v2.1.2c-P2P",
+            "Gurei v1.081-P2P",
+            "S.T.A.L.K.E.R 2 Heart of Chornobyl v2.0.6-P2P",
+            "The Walking Dead Streets of Survival-RUNE",
+            "Dune Awakening-RUNE",
+            "Police Chief Simulator-TENOKE",
+            "lilys world XD-TENOKE",
+            "The Guild 1 Remake Europa 1410 Early Access",
+            "Reincarnation Insurance Program-P2P",
+            "Nioh 3 v2.02-P2P",
+            "Conan Exiles Enhanced Complete Edition v2.2.0-P2P",
+            "Grand Theft Auto V Enhanced v1.0.1158.16-P2P",
+            "007 First Light v1.2.1-P2P",
+            "Company of Heroes 3 v2.5.6.50313-P2P",
+            "Le Mans Ultimate v1.4.1.5-P2P",
+        ];
+
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+
+        println!("\n=== 测试 30 个游戏的名称清洗与 Steam 获取结果 ===");
+        for (idx, title) in titles.iter().enumerate() {
+            let base = base_game_name(title);
+            let (maybe_entry, got_403) = crate::steam_service::fetch_steam_game_info_ext(&client, &base, "schinese");
+            match maybe_entry {
+                Some(entry) => {
+                    let appid_str = entry.appid.map(|id| id.to_string()).unwrap_or_else(|| "None".to_string());
+                    let name_str = entry.name.unwrap_or_else(|| "None".to_string());
+                    let reviews_str = match (entry.positive_percent, entry.total_reviews, entry.review_score_desc) {
+                        (Some(pct), Some(tot), Some(desc)) => format!("👍 {}% ({}篇, 评分档位:{})", pct, tot, desc),
+                        (_, Some(tot), _) => format!("评价不足 ({}篇)", tot),
+                        _ => "暂无评价".to_string(),
+                    };
+                    println!("[{:02}] 成功: {} => base: \"{}\" | AppID: {} | 游戏: {} | 评价: {}", idx + 1, title, base, appid_str, name_str, reviews_str);
+                }
+                None => {
+                    println!("[{:02}] 未找到: {} => base: \"{}\" | 403限流: {}", idx + 1, title, base, got_403);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(350));
+        }
+    }
 }
