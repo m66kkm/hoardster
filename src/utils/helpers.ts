@@ -1,3 +1,11 @@
+import { invoke } from "@tauri-apps/api/core";
+
+export const openExternalUrl = (url: string) => {
+  invoke("open_url_command", { url }).catch(() => {
+    window.open(url, "_blank");
+  });
+};
+
 // Helper for steam ratings color
 export const getRatingColorClass = (desc?: number | string): string => {
   if (desc === undefined || desc === null || desc === 0 || desc === "0") return "rating-none";

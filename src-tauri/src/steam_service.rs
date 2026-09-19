@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::collections::HashMap;
 use reqwest::blocking::Client;
 use serde_json::Value;
+use std::time::{Duration, Instant};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct SteamCacheEntry {
@@ -284,3 +285,113 @@ pub fn fetch_steam_game_info_ext(client: &Client, base_name: &str, lang: &str) -
 pub fn fetch_steam_game_info(client: &Client, base_name: &str, lang: &str) -> Option<SteamCacheEntry> {
     fetch_steam_game_info_ext(client, base_name, lang).0
 }
+
+/// 自适应频控控制器：当出现 403 时降为单线程保护期 1 分钟；保护期恢复时每 1 分钟 +1 并发，若 +1 后遇 403 则回滚 -1
+pub struct ThrottleController {
+    max_threads: usize,
+    current_threads: usize,
+    in_protective_ramp: bool,
+    last_change: Instant,
+    last_403_event: Instant,
+}
+
+impl ThrottleController {
+    pub fn new(max_threads: usize) -> Self {
+        Self {
+            max_threads,
+            current_threads: max_threads,
+            in_protective_ramp: false,
+            last_change: Instant::now(),
+            last_403_event: Instant::now() - Duration::from_secs(100),
+        }
+    }
+
+    /// 检查是否平稳运行满 1 分钟；若是且处于保护恢复期，则并发 +1，直到恢复至配置值
+    pub fn check_ramp(&mut self) -> Option<(usize, String)> {
+        if self.in_protective_ramp {
+            if self.last_change.elapsed() >= Duration::from_secs(60) {
+                self.last_change = Instant::now();
+                self.current_threads += 1;
+                if self.current_threads >= self.max_threads {
+                    self.current_threads = self.max_threads;
+                    self.in_protective_ramp = false;
+                    Some((
+                        self.current_threads,
+                        format!(
+                            "Steam 频控完全解除，并发已恢复至配置值 ({} 线程)",
+                            self.max_threads
+                        ),
+                    ))
+                } else {
+                    Some((
+                        self.current_threads,
+                        format!(
+                            "Steam 保护期平稳运行1分钟，并发提升至 {} / {} 线程，将以新并发继续观察1分钟",
+                            self.current_threads, self.max_threads
+                        ),
+                    ))
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    }
+
+    /// 遭遇 403 频控时的降级 / 回滚逻辑
+    pub fn on_403(&mut self, base_name: &str) -> (usize, String) {
+        let now = Instant::now();
+        // 防短时间突发多次 403 导致并发连续骤降（3秒内的 403 视为同一次频控突发）
+        let is_same_burst = self.last_403_event.elapsed() < Duration::from_secs(3);
+        self.last_403_event = now;
+
+        if !self.in_protective_ramp {
+            // 首次遭遇 403：进入保护期，主动降为 1 线程并发
+            self.in_protective_ramp = true;
+            self.current_threads = 1;
+            self.last_change = now;
+            (
+                1,
+                format!(
+                    "⚠️ 遭遇 Steam 频控(403)，已进入保护期降为单线程，将持续运行1分钟: {}",
+                    base_name
+                ),
+            )
+        } else {
+            // 已在保护恢复期中，提升后再次遭遇 403：回滚到 -1 的状态
+            let old = self.current_threads;
+            if !is_same_burst {
+                self.current_threads = self.current_threads.saturating_sub(1).max(1);
+            }
+            self.last_change = now; // 重置当前并发档位的1分钟观察计时
+
+            if old > 1 {
+                (
+                    self.current_threads,
+                    format!(
+                        "⚠️ 并发提升至 {} 线程时再次遭遇 403，已回滚至 {} 线程并持续1分钟: {}",
+                        old, self.current_threads, base_name
+                    ),
+                )
+            } else {
+                (
+                    1,
+                    format!(
+                        "⚠️ 单线程保护期内仍有 403 频控，已重置1分钟冷却计时: {}",
+                        base_name
+                    ),
+                )
+            }
+        }
+    }
+
+    pub fn get_current_threads(&self) -> usize {
+        self.current_threads
+    }
+
+    pub fn is_ramping(&self) -> bool {
+        self.in_protective_ramp
+    }
+}
+

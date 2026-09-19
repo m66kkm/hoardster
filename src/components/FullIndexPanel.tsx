@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Gamepad2 } from "lucide-react";
 import type { Game } from "../types";
-import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass } from "../utils/helpers";
+import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass, getSteamStoreUrl, openExternalUrl } from "../utils/helpers";
 import Pagination from "./shared/Pagination";
 
 interface FullIndexPanelProps {
@@ -91,9 +91,17 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                   </td>
                   <td>
                     {game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" && Number(game.review_score_desc) > 0 ? (
-                      <span className={`rating-text ${getRatingColorClass(game.review_score_desc)}`}>
+                      <span 
+                        className={`rating-text ${getRatingColorClass(game.review_score_desc)} clickable-rating`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          openExternalUrl(getSteamStoreUrl(game.appid, game.base_name, game.name || game.original_name));
+                        }}
+                        title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
+                      >
                         {game.positive_percent !== undefined && game.positive_percent !== null && Number(game.positive_percent) > 0 ? `👍 ${game.positive_percent}% ` : ""}
                         ({getReviewScoreText(t, game.review_score_desc)})
+                        <ExternalLink size={10} style={{ marginLeft: 4, opacity: 0.7 }} />
                       </span>
                     ) : (
                       <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating") || "暂无评价"}</span>
@@ -111,9 +119,21 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                     {!game.is_exact_dup && !game.is_version_dup && <span style={{ color: "var(--text-secondary)", opacity: 0.3 }}>-</span>}
                   </td>
                   <td style={{ textAlign: "center" }}>
-                    <button className="view-btn" onClick={() => openGameFolder(game.full_path)} title={t("openInExplorer")} style={{ padding: "0.4rem", display: "inline-flex" }}>
-                      <ExternalLink size={12} />
-                    </button>
+                    <div style={{ display: "flex", gap: "0.35rem", justifyContent: "center" }}>
+                      {(game.appid || (game.review_score_desc && Number(game.review_score_desc) > 0)) && (
+                        <button 
+                          className="view-btn" 
+                          onClick={() => openExternalUrl(getSteamStoreUrl(game.appid, game.base_name, game.name || game.original_name))} 
+                          title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"} 
+                          style={{ padding: "0.4rem", display: "inline-flex", color: "var(--primary-accent)" }}
+                        >
+                          <Gamepad2 size={12} />
+                        </button>
+                      )}
+                      <button className="view-btn" onClick={() => openGameFolder(game.full_path)} title={t("openInExplorer")} style={{ padding: "0.4rem", display: "inline-flex" }}>
+                        <ExternalLink size={12} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               );

@@ -1,11 +1,12 @@
 use crate::db::{Game, get_scan_paths, get_steam_cache, get_config, insert_steam_cache_entry, save_scanned_games, insert_scan_history};
+use crate::steam_service::ThrottleController;
 use reqwest::blocking::Client;
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 use rayon::prelude::*;
@@ -405,7 +406,12 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
 
     let new_games: Vec<String> = representatives
         .into_iter()
-        .filter(|base| !cache.contains_key(base))
+        .filter(|base| {
+            match cache.get(base) {
+                Some(entry) => entry.review_score_desc.is_none(),
+                None => true,
+            }
+        })
         .collect();
 
     let client = Client::builder()
@@ -421,64 +427,145 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
     let _ = fs::create_dir_all(&covers_dir);
 
     let mut new_steam_entries: i64 = 0;
+    let total_new = new_games.len();
 
     if !new_games.is_empty() {
-        let total_new = new_games.len();
         
-        let new_games_arc = Arc::new(std::sync::Mutex::new(new_games.clone().into_iter().enumerate()));
-        let (tx, rx) = std::sync::mpsc::channel();
+        let queue: Arc<Mutex<VecDeque<(String, usize)>>> = Arc::new(Mutex::new(
+            new_games.into_iter().map(|name| (name, 0)).collect()
+        ));
+        let throttle_ctrl = Arc::new(Mutex::new(ThrottleController::new(steam_api_threads)));
+        let active_tasks = Arc::new(AtomicUsize::new(0));
         let covers_dir_arc = Arc::new(covers_dir);
-        
-        for _ in 0..steam_api_threads {
+
+        enum WorkerMessage {
+            StatusNotification {
+                message: String,
+            },
+            ItemProcessed {
+                base_name: String,
+                entry: Option<crate::steam_service::SteamCacheEntry>,
+                current_concurrency: usize,
+                is_ramping: bool,
+            },
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel::<WorkerMessage>();
+        let mut thread_handles = Vec::new();
+
+        for thread_idx in 0..steam_api_threads {
             let tx_clone = tx.clone();
-            let games_clone = Arc::clone(&new_games_arc);
+            let queue_clone = Arc::clone(&queue);
             let cancel_clone = Arc::clone(&cancel_flag);
-            let covers_dir_clone = Arc::clone(&covers_dir_arc);
+            let throttle_ctrl_clone = Arc::clone(&throttle_ctrl);
+            let active_tasks_clone = Arc::clone(&active_tasks);
             let client_clone = client.clone();
             let lang = language.clone();
-            
-            std::thread::spawn(move || {
+            let covers_dir_clone = Arc::clone(&covers_dir_arc);
+
+            let handle = std::thread::spawn(move || {
                 loop {
                     if cancel_clone.load(Ordering::Relaxed) {
                         break;
                     }
-                    
-                    let next_game = {
-                        let mut iter = games_clone.lock().unwrap();
-                        iter.next()
+
+                    // 检查自适应爬坡（满1分钟 +1 并发）
+                    let (current_threads, is_ramping) = {
+                        let mut ctrl = throttle_ctrl_clone.lock().unwrap();
+                        let ramp_msg = ctrl.check_ramp();
+                        let cur = ctrl.get_current_threads();
+                        let ramping = ctrl.is_ramping();
+                        drop(ctrl);
+                        if let Some((_c, msg)) = ramp_msg {
+                            let _ = tx_clone.send(WorkerMessage::StatusNotification { message: msg });
+                        }
+                        (cur, ramping)
                     };
-                    
-                    match next_game {
-                        Some((g_idx, base_name)) => {
-                            if steam_api_delay_ms > 0 {
-                                std::thread::sleep(Duration::from_millis(steam_api_delay_ms));
+
+                    // 若当前线程号超出当前允许的并发限制，休眠等待
+                    if thread_idx >= current_threads {
+                        let is_done = {
+                            let q = queue_clone.lock().unwrap();
+                            q.is_empty() && active_tasks_clone.load(Ordering::SeqCst) == 0
+                        };
+                        if is_done {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
+                    }
+
+                    // 尝试提取下一个待抓取游戏
+                    let task = {
+                        let mut q = queue_clone.lock().unwrap();
+                        q.pop_front()
+                    };
+
+                    let (base_name, retry_count) = match task {
+                        Some(item) => {
+                            active_tasks_clone.fetch_add(1, Ordering::SeqCst);
+                            item
+                        }
+                        None => {
+                            if active_tasks_clone.load(Ordering::SeqCst) > 0 {
+                                std::thread::sleep(Duration::from_millis(100));
+                                continue;
+                            } else {
+                                break;
                             }
+                        }
+                    };
 
-                            let maybe_entry = crate::steam_service::fetch_steam_game_info(&client_clone, &base_name, &lang);
-                            let entry = if let Some(mut entry) = maybe_entry {
-                                // 封面下载逻辑
-                                if let Some(cover_url) = entry.local_cover.clone() {
-                                    if let Some(app_id) = entry.appid {
-                                        let cover_filename = format!("{}.jpg", app_id);
-                                        let local_path = covers_dir_clone.join(&cover_filename);
+                    // 根据当前并发保护状态调整请求延迟
+                    let sleep_ms = if is_ramping && current_threads == 1 {
+                        steam_api_delay_ms.max(1000)
+                    } else if is_ramping {
+                        steam_api_delay_ms.max(500)
+                    } else {
+                        steam_api_delay_ms
+                    };
+                    if sleep_ms > 0 {
+                        std::thread::sleep(Duration::from_millis(sleep_ms));
+                    }
 
-                                        let mut download_success = false;
-                                        if let Ok(head_res) = client_clone.head(&cover_url).send() {
-                                            if head_res.status().is_success() {
-                                                if let Ok(img_res) = client_clone.get(&cover_url).send() {
-                                                    if img_res.status().is_success() {
-                                                        if let Ok(img_bytes) = img_res.bytes() {
-                                                            let _ = fs::write(&local_path, &img_bytes);
-                                                            download_success = true;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
+                    if cancel_clone.load(Ordering::Relaxed) {
+                        active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
+                        break;
+                    }
 
-                                        if !download_success {
-                                            let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
-                                            if let Ok(img_res) = client_clone.get(&fallback_url).send() {
+                    let (maybe_entry, got_403) = crate::steam_service::fetch_steam_game_info_ext(&client_clone, &base_name, &lang);
+
+                    if got_403 {
+                        let notify_msg = {
+                            let mut ctrl = throttle_ctrl_clone.lock().unwrap();
+                            let (_c, msg) = ctrl.on_403(&base_name);
+                            msg
+                        };
+                        let _ = tx_clone.send(WorkerMessage::StatusNotification { message: notify_msg });
+
+                        if retry_count < 2 {
+                            {
+                                let mut q = queue_clone.lock().unwrap();
+                                q.push_back((base_name, retry_count + 1));
+                            }
+                            active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
+                            std::thread::sleep(Duration::from_millis(2000));
+                            continue;
+                        }
+                    }
+
+                    // 封面下载逻辑
+                    let final_entry = if let Some(mut entry) = maybe_entry {
+                        if let Some(cover_url) = entry.local_cover.clone() {
+                            if let Some(app_id) = entry.appid {
+                                let cover_filename = format!("{}.jpg", app_id);
+                                let local_path = covers_dir_clone.join(&cover_filename);
+
+                                let mut download_success = local_path.exists();
+                                if !download_success {
+                                    if let Ok(head_res) = client_clone.head(&cover_url).send() {
+                                        if head_res.status().is_success() {
+                                            if let Ok(img_res) = client_clone.get(&cover_url).send() {
                                                 if img_res.status().is_success() {
                                                     if let Ok(img_bytes) = img_res.bytes() {
                                                         let _ = fs::write(&local_path, &img_bytes);
@@ -487,31 +574,50 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                                                 }
                                             }
                                         }
+                                    }
 
-                                        if download_success {
-                                            entry.local_cover = Some(format!("covers/{}", cover_filename));
-                                        } else {
-                                            entry.local_cover = None;
+                                    if !download_success {
+                                        let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
+                                        if let Ok(img_res) = client_clone.get(&fallback_url).send() {
+                                            if img_res.status().is_success() {
+                                                if let Ok(img_bytes) = img_res.bytes() {
+                                                    let _ = fs::write(&local_path, &img_bytes);
+                                                    download_success = true;
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                                Some(entry)
-                            } else {
-                                None
-                            };
 
-                            let _ = tx_clone.send((g_idx, base_name, entry));
+                                if download_success {
+                                    entry.local_cover = Some(format!("covers/{}", cover_filename));
+                                } else {
+                                    entry.local_cover = None;
+                                }
+                            }
                         }
-                        None => break,
-                    }
+                        Some(entry)
+                    } else {
+                        None
+                    };
+
+                    let _ = tx_clone.send(WorkerMessage::ItemProcessed {
+                        base_name,
+                        entry: final_entry,
+                        current_concurrency: current_threads,
+                        is_ramping,
+                    });
+
+                    active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
                 }
             });
+            thread_handles.push(handle);
         }
-        
+
         drop(tx); // drop the original sender
-        
+
         let mut processed = 0;
-        for (_g_idx, base_name, entry_opt) in rx {
+        for msg in rx {
             if cancel_flag.load(Ordering::Relaxed) {
                 let completed_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
                 let _ = insert_scan_history(
@@ -519,55 +625,72 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                     &started_at,
                     &completed_at,
                     raw_scanned.len() as i64,
-                    new_games.len() as i64,
+                    total_new as i64,
                     new_steam_entries,
                     "cancelled",
                 );
+                for h in thread_handles {
+                    let _ = h.join();
+                }
                 return Err("扫描已被用户取消".to_string());
             }
 
-            processed += 1;
-            let _ = app_handle.emit(
-                "scan-progress",
-                ProgressEvent {
-                    step: "query-steam".to_string(),
-                    message: format!("正在向 Steam API 检索新游戏 ({} / {}): {}", processed, total_new, base_name),
-                    current: processed,
-                    total: total_new,
-                },
-            );
+            match msg {
+                WorkerMessage::StatusNotification { message } => {
+                    let _ = app_handle.emit(
+                        "scan-progress",
+                        ProgressEvent {
+                            step: "query-steam".to_string(),
+                            message,
+                            current: processed,
+                            total: total_new,
+                        },
+                    );
+                }
+                WorkerMessage::ItemProcessed { base_name, entry, current_concurrency, is_ramping } => {
+                    processed += 1;
+                    let ramp_tag = if is_ramping {
+                        format!(" [保护恢复中: {}/{}线程]", current_concurrency, steam_api_threads)
+                    } else {
+                        String::new()
+                    };
+                    let _ = app_handle.emit(
+                        "scan-progress",
+                        ProgressEvent {
+                            step: "query-steam".to_string(),
+                            message: format!("正在向 Steam 检索新游戏与评价 ({} / {}){}: {}", processed, total_new, ramp_tag, base_name),
+                            current: processed,
+                            total: total_new,
+                        },
+                    );
 
-            if let Some(entry) = entry_opt {
-                if entry.appid.is_some() {
-                    // Retry up to 3 times on database lock errors
-                    for attempt in 0..3 {
-                        match insert_steam_cache_entry(&conn, &entry) {
-                            Ok(_) => break,
-                            Err(e) => {
-                                let err_str = e.to_string();
-                                if err_str.contains("locked") && attempt < 2 {
-                                    println!("Steam cache insert locked, retrying ({}/3): {}", attempt + 1, base_name);
-                                    std::thread::sleep(Duration::from_millis(500 * (attempt as u64 + 1)));
-                                } else {
-                                    println!("Error inserting steam cache for {}: {}", base_name, e);
-                                    break;
+                    if let Some(entry) = entry {
+                        if entry.appid.is_some() {
+                            // Retry up to 3 times on database lock errors
+                            for attempt in 0..3 {
+                                match insert_steam_cache_entry(&conn, &entry) {
+                                    Ok(_) => break,
+                                    Err(e) => {
+                                        let err_str = e.to_string();
+                                        if err_str.contains("locked") && attempt < 2 {
+                                            println!("Steam cache insert locked, retrying ({}/3): {}", attempt + 1, base_name);
+                                            std::thread::sleep(Duration::from_millis(300 * (attempt as u64 + 1)));
+                                        } else {
+                                            println!("Error inserting steam cache for {}: {}", base_name, e);
+                                            break;
+                                        }
+                                    }
                                 }
                             }
+                            new_steam_entries += 1;
                         }
                     }
-                    // Update raw_scanned so the first scan has the steam data
-                    raw_scanned[_g_idx].appid = entry.appid;
-                    raw_scanned[_g_idx].name = entry.name.clone().or(raw_scanned[_g_idx].name.clone());
-                    raw_scanned[_g_idx].local_cover = entry.local_cover.clone();
-                    raw_scanned[_g_idx].review_score_desc = entry.review_score_desc;
-                    raw_scanned[_g_idx].positive_percent = entry.positive_percent.map(|x| x as i64);
-                    raw_scanned[_g_idx].total_reviews = entry.total_reviews.map(|x| x as i64);
-                    raw_scanned[_g_idx].release_date = entry.release_date.clone();
-                    raw_scanned[_g_idx].genres = entry.genres.clone();
-                    
-                    new_steam_entries += 1;
                 }
             }
+        }
+
+        for h in thread_handles {
+            let _ = h.join();
         }
     }
 
@@ -591,7 +714,7 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         &started_at,
         &completed_at,
         raw_scanned.len() as i64,
-        new_games.len() as i64,
+        total_new as i64,
         new_steam_entries,
         "completed",
     );

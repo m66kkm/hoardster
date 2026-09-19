@@ -34,7 +34,29 @@ export function useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal }: U
     }
   }, [searchVal, driveVal, typeVal, ratingVal, sortVal]);
 
-  // Load duplicate groups
+const matchRating = (game: Game, rating: string) => {
+  if (!rating) return true;
+  const scoreDesc = Number(game.review_score_desc) || 0;
+  const percent = game.positive_percent !== undefined && game.positive_percent !== null ? Number(game.positive_percent) : null;
+  if (rating === "positive") {
+    return scoreDesc >= 6 || (percent !== null && percent >= 70 && scoreDesc >= 5);
+  }
+  if (rating === "very_positive") {
+    return scoreDesc >= 8 || (percent !== null && percent >= 80 && scoreDesc >= 6);
+  }
+  if (rating === "overwhelmingly_positive") {
+    return scoreDesc === 9 || (percent !== null && percent >= 95 && (game.total_reviews || 0) >= 500);
+  }
+  if (rating === "mixed_plus") {
+    return scoreDesc >= 5 || (percent !== null && percent >= 40 && scoreDesc > 0);
+  }
+  if (rating === "has_rating") {
+    return scoreDesc > 0 || (percent !== null && percent > 0);
+  }
+  return String(scoreDesc) === rating;
+};
+
+// Load duplicate groups
   const loadDuplicates = useCallback(async () => {
     try {
       const exactDups = await invoke<DuplicateGroup[]>("get_duplicates_command", { dupType: "exact" });
@@ -49,7 +71,8 @@ export function useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal }: U
                               game.full_path.toLowerCase().includes(searchLower);
             const driveMatch = driveVal ? game.source_path === driveVal : true;
             const typeMatch = typeVal ? game.genres?.includes(typeVal) : true;
-            return nameMatch && driveMatch && typeMatch;
+            const ratingMatch = matchRating(game, ratingVal);
+            return nameMatch && driveMatch && typeMatch && ratingMatch;
           });
           return { ...group, games: filteredGames };
         }).filter(group => group.games.length > 1);
@@ -66,7 +89,7 @@ export function useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal }: U
     } catch (e) {
       console.error("获取重复项失败:", e);
     }
-  }, [searchVal, driveVal, typeVal]);
+  }, [searchVal, driveVal, typeVal, ratingVal]);
 
   // Load franchises
   const loadFranchises = useCallback(async () => {
@@ -79,7 +102,8 @@ export function useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal }: U
                             game.full_path.toLowerCase().includes(searchLower);
           const driveMatch = driveVal ? game.source_path === driveVal : true;
           const typeMatch = typeVal ? game.genres?.includes(typeVal) : true;
-          return nameMatch && driveMatch && typeMatch;
+          const ratingMatch = matchRating(game, ratingVal);
+          return nameMatch && driveMatch && typeMatch && ratingMatch;
         });
         return { ...group, games: filteredGames };
       }).filter(group => group.games.length > 0);
@@ -88,7 +112,7 @@ export function useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal }: U
     } catch (e) {
       console.error("获取系列关系失败:", e);
     }
-  }, [searchVal, driveVal, typeVal]);
+  }, [searchVal, driveVal, typeVal, ratingVal]);
 
   return {
     gamesList,

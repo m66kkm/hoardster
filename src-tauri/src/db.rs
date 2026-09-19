@@ -589,17 +589,36 @@ pub fn get_games_list(
     }
 
     if !rating.is_empty() {
-        let param_index = params_vec.len() + 1;
-        query.push_str(&format!(" AND CAST(s.review_score_desc AS INTEGER) = ?{}", param_index));
-        params_vec.push(Box::new(rating.to_string()));
+        match rating {
+            "positive" => {
+                query.push_str(" AND (CAST(s.review_score_desc AS INTEGER) >= 6 OR (s.positive_percent >= 70 AND CAST(s.review_score_desc AS INTEGER) >= 5))");
+            }
+            "very_positive" => {
+                query.push_str(" AND (CAST(s.review_score_desc AS INTEGER) >= 8 OR (s.positive_percent >= 80 AND CAST(s.review_score_desc AS INTEGER) >= 6))");
+            }
+            "overwhelmingly_positive" => {
+                query.push_str(" AND (CAST(s.review_score_desc AS INTEGER) = 9 OR (s.positive_percent >= 95 AND (s.total_reviews >= 500 OR CAST(s.review_score_desc AS INTEGER) = 9)))");
+            }
+            "mixed_plus" => {
+                query.push_str(" AND (CAST(s.review_score_desc AS INTEGER) >= 5 OR (s.positive_percent >= 40 AND CAST(s.review_score_desc AS INTEGER) > 0))");
+            }
+            "has_rating" => {
+                query.push_str(" AND (CAST(s.review_score_desc AS INTEGER) > 0 OR s.positive_percent > 0)");
+            }
+            other => {
+                let param_index = params_vec.len() + 1;
+                query.push_str(&format!(" AND CAST(s.review_score_desc AS INTEGER) = ?{}", param_index));
+                params_vec.push(Box::new(other.to_string()));
+            }
+        }
     }
 
     // 排序逻辑
     match sort {
         "name-asc" => query.push_str(" ORDER BY g.original_name COLLATE NOCASE ASC"),
         "name-desc" => query.push_str(" ORDER BY g.original_name COLLATE NOCASE DESC"),
-        "steam-desc" => query.push_str(" ORDER BY CASE WHEN s.review_score_desc IS NULL THEN 0 ELSE 1 END DESC, s.positive_percent DESC, s.total_reviews DESC, g.original_name COLLATE NOCASE ASC"),
-        "steam-asc" => query.push_str(" ORDER BY CASE WHEN s.review_score_desc IS NULL THEN 0 ELSE 1 END DESC, s.positive_percent ASC, s.total_reviews ASC, g.original_name COLLATE NOCASE ASC"),
+        "steam-desc" => query.push_str(" ORDER BY CASE WHEN s.review_score_desc IS NULL OR CAST(s.review_score_desc AS INTEGER) = 0 THEN 0 ELSE 1 END DESC, s.positive_percent DESC, s.total_reviews DESC, g.original_name COLLATE NOCASE ASC"),
+        "steam-asc" => query.push_str(" ORDER BY CASE WHEN s.review_score_desc IS NULL OR CAST(s.review_score_desc AS INTEGER) = 0 THEN 0 ELSE 1 END DESC, s.positive_percent ASC, s.total_reviews ASC, g.original_name COLLATE NOCASE ASC"),
         "size-desc" => query.push_str(" ORDER BY g.size_bytes DESC"),
         "size-asc" => query.push_str(" ORDER BY g.size_bytes ASC"),
         _ => query.push_str(" ORDER BY g.original_name COLLATE NOCASE ASC"),

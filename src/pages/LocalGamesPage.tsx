@@ -37,7 +37,6 @@ export default function LocalGamesPage() {
   const { scanPaths, loadScanPaths } = useSettings();
   
   const [genres, setGenres] = useState<string[]>([]);
-  const [ratings, setRatings] = useState<string[]>([]);
   const [openAccordions, setOpenAccordions] = useState<Record<string, boolean>>({});
 
   const toggleAccordion = (name: string) => {
@@ -73,9 +72,6 @@ export default function LocalGamesPage() {
     loadScanPaths();
     invoke<string[]>("get_all_genres_command")
       .then(setGenres)
-      .catch(console.error);
-    invoke<{name: string, count: number}[]>("get_rating_stats_command")
-      .then(stats => setRatings(stats.map(s => s.name)))
       .catch(console.error);
   }, [loadScanPaths]);
 
@@ -141,6 +137,14 @@ export default function LocalGamesPage() {
     { value: "size-asc", label: t("filterSortSizeAsc") }
   ];
 
+  const ratingFilterOptions = [
+    { value: "positive", label: t("srFilterPositive") || "Steam好评 (≥70%)" },
+    { value: "very_positive", label: t("srFilterVeryPositive") || "特别好评 (≥80%)" },
+    { value: "overwhelmingly_positive", label: t("srFilterOverwhelminglyPositive") || "好评如潮 (≥95%)" },
+    { value: "mixed_plus", label: t("srFilterMixedPlus") || "褒贬不一及以上 (≥40%)" },
+    { value: "has_rating", label: t("srFilterHasRating") || "仅看有评价" },
+  ];
+
   return (
     <>
       <TabNav 
@@ -167,8 +171,8 @@ export default function LocalGamesPage() {
         <FilterSelect 
           value={ratingVal} 
           onChange={setRatingVal} 
-          options={ratings} 
-          allLabel="所有评价热度" 
+          options={ratingFilterOptions} 
+          allLabel={t("srFilterAllRatings") || "所有Steam评价"} 
         />
         <SortSelect 
           value={sortVal} 

@@ -1,8 +1,8 @@
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ExternalLink } from "lucide-react";
+import { ChevronDown, ExternalLink, Gamepad2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { FranchiseGroup } from "../types";
-import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass } from "../utils/helpers";
+import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass, getSteamStoreUrl, openExternalUrl } from "../utils/helpers";
 
 interface FranchisesPanelProps {
   franchises: FranchiseGroup[];
@@ -75,9 +75,17 @@ export default function FranchisesPanel({ franchises, openAccordions, toggleAcco
                           </td>
                           <td>
                             {g.review_score_desc !== undefined && g.review_score_desc !== null && g.review_score_desc !== "" && Number(g.review_score_desc) > 0 ? (
-                              <span className={`rating-text ${getRatingColorClass(g.review_score_desc)}`} title={t("steamRatingHover", { percent: g.positive_percent, total: g.total_reviews })}>
+                              <span 
+                                className={`rating-text ${getRatingColorClass(g.review_score_desc)} clickable-rating`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openExternalUrl(getSteamStoreUrl(g.appid, g.base_name, g.original_name));
+                                }}
+                                title={`${t("steamRatingHover", { percent: g.positive_percent, total: g.total_reviews })}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
+                              >
                                 {g.positive_percent !== undefined && g.positive_percent !== null && Number(g.positive_percent) > 0 ? `👍 ${g.positive_percent}% ` : ""}
                                 ({getReviewScoreText(t, g.review_score_desc)})
+                                <ExternalLink size={10} style={{ marginLeft: 4, opacity: 0.7 }} />
                               </span>
                             ) : (
                               <span style={{ fontSize: "0.75rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating") || "暂无评价"}</span>
@@ -90,9 +98,21 @@ export default function FranchisesPanel({ franchises, openAccordions, toggleAcco
                             <span className="code-path" onClick={() => copyPath(g.full_path, g.original_name)} title={t("copyPathMsg")}>{g.full_path}</span>
                           </td>
                           <td style={{ textAlign: "center" }}>
-                            <button className="view-btn" onClick={() => openGameFolder(g.full_path)} title={t("openInExplorer")} style={{ padding: "0.4rem", display: "inline-flex" }}>
-                              <ExternalLink size={12} />
-                            </button>
+                            <div style={{ display: "flex", gap: "0.35rem", justifyContent: "center" }}>
+                              {(g.appid || (g.review_score_desc && Number(g.review_score_desc) > 0)) && (
+                                <button 
+                                  className="view-btn" 
+                                  onClick={() => openExternalUrl(getSteamStoreUrl(g.appid, g.base_name, g.original_name))} 
+                                  title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"} 
+                                  style={{ padding: "0.4rem", display: "inline-flex", color: "var(--primary-accent)" }}
+                                >
+                                  <Gamepad2 size={12} />
+                                </button>
+                              )}
+                              <button className="view-btn" onClick={() => openGameFolder(g.full_path)} title={t("openInExplorer")} style={{ padding: "0.4rem", display: "inline-flex" }}>
+                                <ExternalLink size={12} />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
