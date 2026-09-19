@@ -1,11 +1,13 @@
 import { useState, useEffect } from "react";
-import { Terminal, RefreshCw, Flame } from "lucide-react";
+import { Terminal, RefreshCw, Flame, ExternalLink, Gamepad2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useScrape } from "../hooks/useScrape";
 import type { TorrentSR } from "../types";
+import { getRatingColorClass, getReviewScoreText, getSteamStoreUrl } from "../utils/helpers";
 import Pagination from "./shared/Pagination";
 import SearchBox from "./shared/SearchBox";
+import FilterSelect from "./shared/FilterSelect";
 import SortSelect from "./shared/SortSelect";
 
 interface SRPanelProps {
@@ -17,12 +19,22 @@ export default function SRPanel({ showToast }: SRPanelProps) {
   const [torrents, setTorrents] = useState<TorrentSR[]>([]);
   const [searchVal, setSearchVal] = useState("");
   const [sortVal, setSortVal] = useState("");
+  const [ratingFilter, setRatingFilter] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const pageSize = 30;
   
+  const ratingFilterOptions = [
+    { value: "positive", label: t("srFilterPositive") || "Steam好评 (≥70%)" },
+    { value: "very_positive", label: t("srFilterVeryPositive") || "特别好评 (≥80%)" },
+    { value: "overwhelmingly_positive", label: t("srFilterOverwhelminglyPositive") || "好评如潮 (≥95%)" },
+    { value: "mixed_plus", label: t("srFilterMixedPlus") || "褒贬不一及以上 (≥40%)" },
+    { value: "has_rating", label: t("srFilterHasRating") || "仅看有评价" },
+  ];
+
   const sortOptions = [
     { value: "dateAsc", label: t("srSortDateAsc") || "发布时间从旧到新 (Date)" },
     { value: "heatDesc", label: t("srSortHeatDesc") || "热度从高到低 (Heat)" },
+    { value: "ratingDesc", label: t("srSortRatingDesc") || "好评率从高到低 (Rating)" },
   ];
   
   const { 
@@ -50,16 +62,52 @@ export default function SRPanel({ showToast }: SRPanelProps) {
     loadData();
   }, [isScraping, scrapeProgress]);
 
-  let filteredTorrents = torrents.filter(t => 
-    t.title.toLowerCase().includes(searchVal.toLowerCase()) ||
-    t.category.toLowerCase().includes(searchVal.toLowerCase())
-  );
+  let filteredTorrents = torrents.filter(t => {
+    const matchesSearch = 
+      t.title.toLowerCase().includes(searchVal.toLowerCase()) ||
+      t.category.toLowerCase().includes(searchVal.toLowerCase()) ||
+      (t.base_name && t.base_name.toLowerCase().includes(searchVal.toLowerCase()));
+    
+    if (!matchesSearch) return false;
+
+    if (ratingFilter) {
+      const scoreDesc = Number(t.review_score_desc) || 0;
+      const percent = t.positive_percent !== undefined && t.positive_percent !== null ? Number(t.positive_percent) : null;
+
+      if (ratingFilter === "positive") {
+        return scoreDesc >= 6 || (percent !== null && percent >= 70 && scoreDesc >= 5);
+      }
+      if (ratingFilter === "very_positive") {
+        return scoreDesc >= 8 || (percent !== null && percent >= 80 && scoreDesc >= 6);
+      }
+      if (ratingFilter === "overwhelmingly_positive") {
+        return scoreDesc === 9 || (percent !== null && percent >= 95 && (t.total_reviews || 0) >= 500);
+      }
+      if (ratingFilter === "mixed_plus") {
+        return scoreDesc >= 5 || (percent !== null && percent >= 40 && scoreDesc > 0);
+      }
+      if (ratingFilter === "has_rating") {
+        return scoreDesc > 0 || (percent !== null && percent > 0);
+      }
+    }
+
+    return true;
+  });
 
   filteredTorrents.sort((a, b) => {
     if (sortVal === "dateAsc") {
       return a.published_ts - b.published_ts;
     } else if (sortVal === "heatDesc") {
       return (b.comments || 0) - (a.comments || 0);
+    } else if (sortVal === "ratingDesc") {
+      const hasRatingA = (a.review_score_desc !== undefined && a.review_score_desc !== null && Number(a.review_score_desc) > 0) || ((a.positive_percent || 0) > 0);
+      const hasRatingB = (b.review_score_desc !== undefined && b.review_score_desc !== null && Number(b.review_score_desc) > 0) || ((b.positive_percent || 0) > 0);
+      if (hasRatingA && !hasRatingB) return -1;
+      if (!hasRatingA && hasRatingB) return 1;
+      const scoreA = a.positive_percent || 0;
+      const scoreB = b.positive_percent || 0;
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return (b.total_reviews || 0) - (a.total_reviews || 0);
     } else {
       // Default: dateDesc
       return b.published_ts - a.published_ts;
@@ -68,7 +116,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchVal, sortVal]);
+  }, [searchVal, sortVal, ratingFilter]);
 
   const totalItems = filteredTorrents.length;
   const totalPages = Math.ceil(totalItems / pageSize) || 1;
@@ -181,6 +229,12 @@ export default function SRPanel({ showToast }: SRPanelProps) {
 
       <section className="controls-row" style={{ display: "flex", gap: "1rem", alignItems: "center", marginBottom: "1.5rem" }}>
         <SearchBox value={searchVal} onChange={setSearchVal} />
+        <FilterSelect 
+          value={ratingFilter} 
+          onChange={setRatingFilter} 
+          options={ratingFilterOptions} 
+          allLabel={t("srFilterAllRatings") || "所有Steam评价"} 
+        />
         <SortSelect 
           value={sortVal} 
           onChange={setSortVal} 
@@ -190,73 +244,121 @@ export default function SRPanel({ showToast }: SRPanelProps) {
       </section>
 
       <div className="posters-grid">
-        {paginatedTorrents.map((t) => (
-          <div 
-            key={t.id} 
-            className="poster-card"
-            onClick={() => handleOpenUrl(t.url)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              handleCopyUrl(t.url);
-            }}
-            title={`${t.title}\n${t.date}\n${t.category}\n\n(右键复制链接)`}
-          >
-            {t.image_url ? (
-              <img 
-                className="poster-img"
-                src={t.image_url} 
-                alt={t.title}
-                referrerPolicy="no-referrer"
-              />
-            ) : (
-              <div className="poster-fallback" style={{ background: "linear-gradient(135deg, #1e293b, #0f172a)" }}>
-                <div className="poster-fallback-icon"><Terminal /></div>
-                <div className="poster-fallback-title" title={t.title}>{t.title}</div>
-              </div>
-            )}
-            
-            <div className="poster-info">
-              <div className="poster-title" title={t.title}>
-                {t.title}
-              </div>
+        {paginatedTorrents.map((torrent) => {
+          const hasRating = torrent.review_score_desc !== undefined && torrent.review_score_desc !== null && torrent.review_score_desc !== "" && Number(torrent.review_score_desc) > 0;
+          const ratingText = hasRating ? getReviewScoreText(t, torrent.review_score_desc) : "";
+          const hasPercent = torrent.positive_percent !== undefined && torrent.positive_percent !== null && Number(torrent.positive_percent) > 0;
+
+          return (
+            <div 
+              key={torrent.id} 
+              className="poster-card"
+              onClick={() => handleOpenUrl(torrent.url)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                handleCopyUrl(torrent.url);
+              }}
+              title={`${torrent.title}\n${torrent.date}\n${torrent.category}${hasRating ? `\nSteam评价: ${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}` : "\nSteam评价: 暂无评价"}\n\n(左键打开发布页 / 点击 Steam 评价打开 Steam / 右键复制链接)`}
+            >
+              {hasRating && (
+                <div 
+                  className={`rating-overlay ${getRatingColorClass(torrent.review_score_desc)}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.title);
+                    handleOpenUrl(steamUrl);
+                  }}
+                  title={`${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
+                >
+                  {hasPercent && <span>👍 {torrent.positive_percent}%</span>}
+                  <span className="rating-desc">{ratingText}</span>
+                  <ExternalLink size={10} style={{ opacity: 0.8, marginLeft: 2 }} />
+                </div>
+              )}
+
+              {torrent.image_url ? (
+                <img 
+                  className="poster-img"
+                  src={torrent.image_url} 
+                  alt={torrent.title}
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="poster-fallback" style={{ background: "linear-gradient(135deg, #1e293b, #0f172a)" }}>
+                  <div className="poster-fallback-icon"><Terminal /></div>
+                  <div className="poster-fallback-title" title={torrent.title}>{torrent.title}</div>
+                </div>
+              )}
               
-              <div className="poster-meta" style={{ marginBottom: "0.25rem", color: "rgba(255,255,255,0.7)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span>{t.date}</span>
-                {t.comments > 0 && (
-                  <span style={{ display: "flex", alignItems: "center", gap: "0.2rem", color: "#ef4444" }}>
-                    <Flame size={12} />
-                    {t.comments}
-                  </span>
-                )}
-              </div>
-              
-              <div className="poster-meta" style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem", justifyContent: "flex-start" }}>
-                {t.category.split(",")
-                  .map(c => c.trim())
-                  .filter(c => {
-                    const lowerC = c.toLowerCase();
-                    return lowerC && !lowerC.includes("request accepted") && !lowerC.includes("pc games");
-                  })
-                  .slice(0, 2)
-                  .map((c, i) => {
-                  let badgeClass = "badge";
-                  if (c.toUpperCase().includes("GAME")) badgeClass += " badge-dir";
-                  else if (c.toUpperCase().includes("UPDATE")) badgeClass += " badge-ver";
-                  return (
-                    <span key={i} className={badgeClass} style={{ fontSize: "0.65rem", padding: "0.15rem 0.35rem", background: "rgba(255,255,255,0.2)", border: "none", color: "#fff" }}>
-                      {c}
+              <div className="poster-info">
+                <div className="poster-title" title={torrent.title}>
+                  {torrent.title}
+                </div>
+                
+                <div className="poster-meta" style={{ marginBottom: "0.25rem", color: "rgba(255,255,255,0.7)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{torrent.date}</span>
+                  {torrent.comments > 0 && (
+                    <span style={{ display: "flex", alignItems: "center", gap: "0.2rem", color: "#ef4444" }}>
+                      <Flame size={12} />
+                      {torrent.comments}
                     </span>
-                  );
-                })}
+                  )}
+                </div>
+                
+                <div className="poster-meta" style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem", justifyContent: "flex-start", alignItems: "center" }}>
+                  {(torrent.appid || hasRating) && (
+                    <span 
+                      className="badge badge-dir" 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.title);
+                        handleOpenUrl(steamUrl);
+                      }}
+                      title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
+                      style={{ 
+                        fontSize: "0.65rem", 
+                        padding: "0.15rem 0.4rem", 
+                        background: "rgba(0, 242, 254, 0.15)", 
+                        border: "1px solid rgba(0, 242, 254, 0.35)", 
+                        color: "#00f2fe",
+                        cursor: "pointer",
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "3px"
+                      }}
+                    >
+                      <Gamepad2 size={10} /> Steam ↗
+                    </span>
+                  )}
+                  {torrent.category.split(",")
+                    .map(c => c.trim())
+                    .filter(c => {
+                      const lowerC = c.toLowerCase();
+                      return lowerC && !lowerC.includes("request accepted") && !lowerC.includes("pc games");
+                    })
+                    .slice(0, 2)
+                    .map((c, i) => {
+                    let badgeClass = "badge";
+                    if (c.toUpperCase().includes("GAME")) badgeClass += " badge-dir";
+                    else if (c.toUpperCase().includes("UPDATE")) badgeClass += " badge-ver";
+                    return (
+                      <span key={i} className={badgeClass} style={{ fontSize: "0.65rem", padding: "0.15rem 0.35rem", background: "rgba(255,255,255,0.2)", border: "none", color: "#fff" }}>
+                        {c}
+                      </span>
+                    );
+                  })}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
       
       {filteredTorrents.length === 0 && !isScraping && (
         <div style={{ textAlign: "center", padding: "3rem", color: "var(--text-secondary)" }}>
-          暂无数据，请点击右上角获取。
+          {torrents.length === 0 
+            ? (t("srEmptyNoData") || "暂无数据，请点击右上角获取。") 
+            : (t("srEmptyFiltered") || "没有找到符合筛选条件的发布记录。")}
         </div>
       )}
 

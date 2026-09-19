@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
-import { Download, Check, Copy, ExternalLink, RefreshCw } from "lucide-react";
+import { Download, Check, Copy, ExternalLink, RefreshCw, Gamepad2 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { mapSteamLangToBCP47 } from "../i18n";
 import type { Torrent1337x } from "../types";
+import { getRatingColorClass, getReviewScoreText, getSteamStoreUrl } from "../utils/helpers";
 import SearchBox from "./shared/SearchBox";
 import SortSelect from "./shared/SortSelect";
 import Pagination from "./shared/Pagination";
@@ -109,11 +110,19 @@ export default function Torrents1337Panel({
   // Apply search query filter
   const filteredTorrents = torrents.filter(t => 
     t.name.toLowerCase().includes(searchVal.toLowerCase()) ||
-    t.uploader.toLowerCase().includes(searchVal.toLowerCase())
+    t.uploader.toLowerCase().includes(searchVal.toLowerCase()) ||
+    (t.base_name && t.base_name.toLowerCase().includes(searchVal.toLowerCase()))
   );
 
   // Apply sorting options
-  if (sortVal === "seeds-desc") {
+  if (sortVal === "rating-desc") {
+    filteredTorrents.sort((a, b) => {
+      const scoreA = a.positive_percent || 0;
+      const scoreB = b.positive_percent || 0;
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return (b.total_reviews || 0) - (a.total_reviews || 0);
+    });
+  } else if (sortVal === "seeds-desc") {
     filteredTorrents.sort((a, b) => b.seeds - a.seeds);
   } else if (sortVal === "seeds-asc") {
     filteredTorrents.sort((a, b) => a.seeds - b.seeds);
@@ -146,6 +155,7 @@ export default function Torrents1337Panel({
 
   const sortOptions = [
     { value: "date-asc", label: t("t1337SortDateAsc") },
+    { value: "rating-desc", label: t("t1337SortRatingDesc") },
     { value: "seeds-desc", label: t("t1337SortSeedsDesc") },
     { value: "seeds-asc", label: t("t1337SortSeedsAsc") },
     { value: "leeches-desc", label: t("t1337SortLeechesDesc") },
@@ -276,6 +286,7 @@ export default function Torrents1337Panel({
           <thead>
             <tr>
               <th>{t("t1337ColName")}</th>
+              <th style={{ width: "160px" }}>{t("colSteamRating")}</th>
               <th style={{ width: "100px" }}>{t("t1337ColSize")}</th>
               <th style={{ width: "90px", color: "#10b981" }}>{t("t1337ColSeeds")}</th>
               <th style={{ width: "90px", color: "#ef4444" }}>{t("t1337ColLeeches")}</th>
@@ -304,12 +315,44 @@ export default function Torrents1337Panel({
                       {torrent.name}
                     </a>
                   </td>
+                  <td>
+                    {torrent.review_score_desc !== undefined && torrent.review_score_desc !== null && torrent.review_score_desc !== "" && Number(torrent.review_score_desc) > 0 ? (
+                      <span 
+                        className={`rating-text ${getRatingColorClass(torrent.review_score_desc)} clickable-rating`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.name);
+                          handleOpenUrl(steamUrl);
+                        }}
+                        title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
+                      >
+                        {torrent.positive_percent !== undefined && torrent.positive_percent !== null && Number(torrent.positive_percent) > 0 ? `👍 ${torrent.positive_percent}% ` : ""}
+                        ({getReviewScoreText(t, torrent.review_score_desc)})
+                        <ExternalLink size={10} style={{ marginLeft: 4, opacity: 0.7 }} />
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)", opacity: 0.5 }}>{t("noRating") || "暂无评价"}</span>
+                    )}
+                  </td>
                   <td style={{ fontFamily: "'Outfit', sans-serif" }}>{formatSizeGB(torrent.size)}</td>
                   <td style={{ color: "#10b981", fontWeight: 600 }}>{torrent.seeds.toLocaleString()}</td>
                   <td style={{ color: "#ef4444", fontWeight: 600 }}>{torrent.leeches.toLocaleString()}</td>
                   <td style={{ color: "var(--text-secondary)" }}>{formatPublishDate(torrent.published_ts, torrent.date, i18n.language)}</td>
                   <td style={{ textAlign: "center" }}>
                     <div style={{ display: "flex", gap: "0.35rem", justifyContent: "center" }}>
+                      {(torrent.appid || (torrent.review_score_desc && Number(torrent.review_score_desc) > 0)) && (
+                        <button 
+                          className="view-btn"
+                          onClick={() => {
+                            const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.name);
+                            handleOpenUrl(steamUrl);
+                          }}
+                          title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
+                          style={{ padding: "0.4rem", display: "inline-flex", color: "var(--primary-accent)" }}
+                        >
+                          <Gamepad2 size={12} />
+                        </button>
+                      )}
                       <button 
                         className="view-btn"
                         onClick={() => handleOpenUrl(torrent.url)}
@@ -333,7 +376,7 @@ export default function Torrents1337Panel({
             })}
             {filteredTorrents.length === 0 && (
               <tr>
-                <td colSpan={6} style={{ textAlign: "center", padding: "3rem", color: "var(--text-secondary)" }}>
+                <td colSpan={7} style={{ textAlign: "center", padding: "3rem", color: "var(--text-secondary)" }}>
                   {t("t1337Empty")}
                 </td>
               </tr>

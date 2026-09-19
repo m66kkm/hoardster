@@ -72,6 +72,13 @@ export interface Torrent1337x {
   uploader: string;
   uploader_url: string;
   published_ts: number;
+
+  // Steam Cache
+  base_name?: string;
+  appid?: number;
+  review_score_desc?: number | string;
+  positive_percent?: number;
+  total_reviews?: number;
 }
 
 export interface TorrentSR {
@@ -84,4 +91,11 @@ export interface TorrentSR {
   fetched_at: string;
   published_ts: number;
   comments: number;
+  
+  // Steam Cache
+  base_name?: string;
+  appid?: number;
+  review_score_desc?: number | string;
+  positive_percent?: number;
+  total_reviews?: number;
 }

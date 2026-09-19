@@ -26,8 +26,16 @@ export const getReviewScoreText = (t: any, desc?: number | string): string => {
   // Backward compatibility for old string data before migration
   const num = parseInt(desc as string, 10);
   if (!isNaN(num)) return t(`reviewScore_${num}`);
-  
   return desc as string;
+};
+
+// Steam store URL resolver
+export const getSteamStoreUrl = (appid?: number, baseName?: string, fallbackTitle?: string): string => {
+  if (appid && appid > 0) {
+    return `https://store.steampowered.com/app/${appid}/`;
+  }
+  const term = baseName || fallbackTitle || "";
+  return `https://store.steampowered.com/search/?term=${encodeURIComponent(term)}`;
 };
 
 // Cover image resolver

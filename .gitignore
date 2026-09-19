@@ -1,6 +1,8 @@
 
 # Game Index specifics
 games.db
+steam_data.db
+*.db
 steam_cache.json
 covers/
 test-steam.js

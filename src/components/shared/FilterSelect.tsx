@@ -1,7 +1,12 @@
+export interface FilterOption {
+  value: string;
+  label: string;
+}
+
 interface FilterSelectProps {
   value: string;
   onChange: (val: string) => void;
-  options: string[];
+  options: (string | FilterOption)[];
   allLabel: string;
 }
 
@@ -18,11 +23,15 @@ export default function FilterSelect({
       className="filter-select"
     >
       <option value="">{allLabel}</option>
-      {options.map((opt) => (
-        <option key={opt} value={opt}>
-          {opt}
-        </option>
-      ))}
+      {options.map((opt) => {
+        const optValue = typeof opt === "string" ? opt : opt.value;
+        const optLabel = typeof opt === "string" ? opt : opt.label;
+        return (
+          <option key={optValue} value={optValue}>
+            {optLabel}
+          </option>
+        );
+      })}
     </select>
   );
 }
