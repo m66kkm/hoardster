@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useScrape } from "../hooks/useScrape";
 import type { TorrentSR } from "../types";
-import { getRatingColorClass, getReviewScoreText, getSteamStoreUrl } from "../utils/helpers";
+import { getRatingColorClass, getReviewScoreText, getSteamStoreUrl, getCoverUrl } from "../utils/helpers";
 import Pagination from "./shared/Pagination";
 import SearchBox from "./shared/SearchBox";
 import FilterSelect from "./shared/FilterSelect";
@@ -32,9 +32,13 @@ export default function SRPanel({ showToast }: SRPanelProps) {
   ];
 
   const sortOptions = [
-    { value: "dateAsc", label: t("srSortDateAsc") || "发布时间从旧到新 (Date)" },
-    { value: "heatDesc", label: t("srSortHeatDesc") || "热度从高到低 (Heat)" },
-    { value: "ratingDesc", label: t("srSortRatingDesc") || "好评率从高到低 (Rating)" },
+    { value: "dateAsc", label: t("srSortDateAsc") },
+    { value: "heatDesc", label: t("srSortHeatDesc") },
+    { value: "heatAsc", label: t("srSortHeatAsc") },
+    { value: "ratingDesc", label: t("srSortRatingDesc") },
+    { value: "ratingAsc", label: t("srSortRatingAsc") },
+    { value: "nameAsc", label: t("srSortNameAsc") },
+    { value: "nameDesc", label: t("srSortNameDesc") },
   ];
   
   const { 
@@ -98,21 +102,58 @@ export default function SRPanel({ showToast }: SRPanelProps) {
     if (sortVal === "dateAsc") {
       return a.published_ts - b.published_ts;
     } else if (sortVal === "heatDesc") {
-      return (b.comments || 0) - (a.comments || 0);
+      const diff = (b.comments || 0) - (a.comments || 0);
+      if (diff !== 0) return diff;
+      return b.published_ts - a.published_ts;
+    } else if (sortVal === "heatAsc") {
+      const diff = (a.comments || 0) - (b.comments || 0);
+      if (diff !== 0) return diff;
+      return b.published_ts - a.published_ts;
     } else if (sortVal === "ratingDesc") {
       const hasRatingA = (a.review_score_desc !== undefined && a.review_score_desc !== null && Number(a.review_score_desc) > 0) || ((a.positive_percent || 0) > 0);
       const hasRatingB = (b.review_score_desc !== undefined && b.review_score_desc !== null && Number(b.review_score_desc) > 0) || ((b.positive_percent || 0) > 0);
       if (hasRatingA && !hasRatingB) return -1;
       if (!hasRatingA && hasRatingB) return 1;
-      const scoreA = a.positive_percent || 0;
-      const scoreB = b.positive_percent || 0;
+      if (!hasRatingA && !hasRatingB) return b.published_ts - a.published_ts;
+
+      const scoreA = a.positive_percent !== undefined && a.positive_percent !== null ? Number(a.positive_percent) : 0;
+      const scoreB = b.positive_percent !== undefined && b.positive_percent !== null ? Number(b.positive_percent) : 0;
       if (scoreA !== scoreB) return scoreB - scoreA;
+      const descA = Number(a.review_score_desc) || 0;
+      const descB = Number(b.review_score_desc) || 0;
+      if (descA !== descB) return descB - descA;
       return (b.total_reviews || 0) - (a.total_reviews || 0);
+    } else if (sortVal === "ratingAsc") {
+      const hasRatingA = (a.review_score_desc !== undefined && a.review_score_desc !== null && Number(a.review_score_desc) > 0) || ((a.positive_percent || 0) > 0);
+      const hasRatingB = (b.review_score_desc !== undefined && b.review_score_desc !== null && Number(b.review_score_desc) > 0) || ((b.positive_percent || 0) > 0);
+      if (hasRatingA && !hasRatingB) return -1;
+      if (!hasRatingA && hasRatingB) return 1;
+      if (!hasRatingA && !hasRatingB) return b.published_ts - a.published_ts;
+
+      const scoreA = a.positive_percent !== undefined && a.positive_percent !== null ? Number(a.positive_percent) : 0;
+      const scoreB = b.positive_percent !== undefined && b.positive_percent !== null ? Number(b.positive_percent) : 0;
+      if (scoreA !== scoreB) return scoreA - scoreB;
+      const descA = Number(a.review_score_desc) || 0;
+      const descB = Number(b.review_score_desc) || 0;
+      if (descA !== descB) return descA - descB;
+      return (a.total_reviews || 0) - (b.total_reviews || 0);
+    } else if (sortVal === "nameAsc") {
+      return a.title.localeCompare(b.title);
+    } else if (sortVal === "nameDesc") {
+      return b.title.localeCompare(a.title);
     } else {
       // Default: dateDesc
       return b.published_ts - a.published_ts;
     }
   });
+
+  // Scroll to top when page changes
+  useEffect(() => {
+    const scrollContainer = document.querySelector(".tab-content-scrollable");
+    if (scrollContainer) {
+      scrollContainer.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  }, [currentPage]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -239,7 +280,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
           value={sortVal} 
           onChange={setSortVal} 
           options={sortOptions} 
-          defaultLabel={t("srSortDateDesc") || "发布时间从新到旧 (Date)"} 
+          defaultLabel={t("srSortDateDesc")} 
         />
       </section>
 
@@ -279,7 +320,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
               {torrent.image_url ? (
                 <img 
                   className="poster-img"
-                  src={torrent.image_url} 
+                  src={getCoverUrl(torrent.image_url) || torrent.image_url} 
                   alt={torrent.title}
                   referrerPolicy="no-referrer"
                 />

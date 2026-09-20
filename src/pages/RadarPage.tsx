@@ -1,7 +1,6 @@
-import { Radio, Download, Terminal, Gift, Gamepad2, RefreshCw } from "lucide-react";
+import { Download, Terminal, Gift, Gamepad2, RefreshCw } from "lucide-react";
 
 import TabNav, { type TabDef } from "../components/TabNav";
-import NewsPanel from "../components/NewsPanel";
 import Torrents1337Panel from "../components/Torrents1337Panel";
 import SRPanel from "../components/SRPanel";
 
@@ -18,7 +17,8 @@ export default function RadarPage() {
   const { 
     activeTab, setActiveTab,
     searchVal, setSearchVal,
-    sortVal, setSortVal
+    sortVal, setSortVal,
+    ratingFilter, setRatingFilter
   } = useRadarStore();
 
   const { 
@@ -34,43 +34,37 @@ export default function RadarPage() {
   const isSrScraping = useScrapeStore((s) => !!s.tasks[getTaskKey("sr")]?.isScraping);
 
   const tabs: TabDef[] = [
-    { id: "news", icon: Radio, labelKey: "tabNews" },
-    { id: "epic", icon: Gift, labelKey: "tabEpic" },
-    { id: "steam", icon: Gamepad2, labelKey: "tabSteam" },
+    { 
+      id: "sr", 
+      icon: isSrScraping ? RefreshCw : Terminal, 
+      labelKey: "tabSR", 
+      isSpinning: isSrScraping 
+    },
     { 
       id: "torrents1337", 
       icon: is1337Scraping ? RefreshCw : Download, 
       labelKey: "tab1337", 
       isSpinning: is1337Scraping 
     },
-    { 
-      id: "sr", 
-      icon: isSrScraping ? RefreshCw : Terminal, 
-      labelKey: "tabSR", 
-      isSpinning: isSrScraping 
-    }
+    { id: "epic", icon: Gift, labelKey: "tabEpic" },
+    { id: "steam", icon: Gamepad2, labelKey: "tabSteam" },
   ];
 
-
-
-
+  // 如果原本持久化了已隐藏的 news tab，自动切到 sr
+  const effectiveTab = activeTab === "news" ? "sr" : activeTab;
 
   return (
     <>
       <TabNav 
         tabs={tabs} 
-        activeTab={activeTab} 
+        activeTab={effectiveTab} 
         onTabChange={(id) => setActiveTab(id)} 
       />
 
       <div className="tab-content-scrollable">
-        {activeTab === "news" && <NewsPanel />}
+        {effectiveTab === "sr" && <SRPanel showToast={showToast} />}
         
-        {activeTab === "epic" && <EpicGamesPanel showToast={showToast} />}
-        
-        {activeTab === "steam" && <SteamGamesPanel showToast={showToast} />}
-        
-        {activeTab === "torrents1337" && (
+        {effectiveTab === "torrents1337" && (
           <Torrents1337Panel 
             showToast={showToast} 
             isScraping={isScraping} 
@@ -82,10 +76,14 @@ export default function RadarPage() {
             setSearchVal={setSearchVal}
             sortVal={sortVal} 
             setSortVal={setSortVal}
+            ratingFilter={ratingFilter}
+            setRatingFilter={setRatingFilter}
           />
         )}
         
-        {activeTab === "sr" && <SRPanel showToast={showToast} />}
+        {effectiveTab === "epic" && <EpicGamesPanel showToast={showToast} />}
+        
+        {effectiveTab === "steam" && <SteamGamesPanel showToast={showToast} />}
       </div>
     </>
   );
