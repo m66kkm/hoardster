@@ -400,6 +400,10 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         }
     }
 
+    // 将 S/R 等来源中的优质封面作为独立的游戏元数据补充进 steam_cache
+    // 优先级原则：优先竖版海报，仅在没有竖版海报时才采用横版图片补充
+    let _ = sync_game_metadata_covers(conn);
+
     Ok(())
 }
 
@@ -466,10 +470,69 @@ pub fn clear_steam_cache(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+pub fn sync_game_metadata_covers(conn: &Connection) -> Result<()> {
+    let _ = conn.execute_batch(
+        "UPDATE steam_db.steam_cache 
+         SET local_cover = (
+             SELECT sr.image_url 
+             FROM skidrow_reloaded sr 
+             WHERE sr.base_name = steam_db.steam_cache.base_name 
+               AND sr.image_url IS NOT NULL 
+               AND sr.image_url != '' 
+             ORDER BY sr.published_ts DESC 
+             LIMIT 1
+         )
+         WHERE (
+             local_cover IS NULL 
+             OR local_cover = ''
+             OR local_cover LIKE '%capsule_231x87%'
+             OR local_cover LIKE '%capsule_184x69%'
+             OR local_cover LIKE '%header.jpg%'
+         )
+         AND EXISTS (
+             SELECT 1 FROM skidrow_reloaded sr 
+             WHERE sr.base_name = steam_db.steam_cache.base_name 
+               AND sr.image_url IS NOT NULL 
+               AND sr.image_url != ''
+         );
+
+         INSERT OR IGNORE INTO steam_db.steam_cache (base_name, name, local_cover)
+         SELECT sr.base_name, MIN(sr.title), sr.image_url
+         FROM skidrow_reloaded sr
+         WHERE sr.base_name IS NOT NULL 
+           AND TRIM(sr.base_name) != '' 
+           AND sr.image_url IS NOT NULL 
+           AND sr.image_url != ''
+           AND NOT EXISTS (
+               SELECT 1 FROM steam_db.steam_cache s WHERE s.base_name = sr.base_name
+           )
+         GROUP BY sr.base_name;"
+    );
+    Ok(())
+}
+
 pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(base_name) DO UPDATE SET
+            appid = excluded.appid,
+            name = COALESCE(excluded.name, steam_cache.name),
+            local_cover = CASE
+                -- 若已有竖版封面（如 S/R 补充的封面或已有 covers/ 或 library_600x900），且新封面是横版，则保留已有竖版封面
+                WHEN steam_cache.local_cover IS NOT NULL 
+                     AND steam_cache.local_cover != '' 
+                     AND NOT (steam_cache.local_cover LIKE '%capsule_231x87%' OR steam_cache.local_cover LIKE '%capsule_184x69%' OR steam_cache.local_cover LIKE '%header.jpg%')
+                     AND (excluded.local_cover LIKE '%capsule_231x87%' OR excluded.local_cover LIKE '%capsule_184x69%' OR excluded.local_cover LIKE '%header.jpg%')
+                THEN steam_cache.local_cover
+                ELSE COALESCE(excluded.local_cover, steam_cache.local_cover)
+            END,
+            review_score_desc = excluded.review_score_desc,
+            positive_percent = excluded.positive_percent,
+            total_reviews = excluded.total_reviews,
+            release_date = COALESCE(excluded.release_date, steam_cache.release_date),
+            last_updated = excluded.last_updated,
+            genres = COALESCE(excluded.genres, steam_cache.genres)",
         params![
             entry.base_name,
             entry.appid,
@@ -1127,6 +1190,7 @@ pub struct Torrent1337x {
     pub published_ts: i64,
     pub base_name: Option<String>,
     pub appid: Option<i64>,
+    pub local_cover: Option<String>,
     pub review_score_desc: Option<i32>,
     pub positive_percent: Option<i64>,
     pub total_reviews: Option<i64>,
@@ -1135,7 +1199,7 @@ pub struct Torrent1337x {
 pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.torrent_id, t.name, t.url, t.seeds, t.leeches, t.date, t.size, t.uploader, t.uploader_url, t.published_ts,
-                t.base_name, s.appid, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews
+                t.base_name, s.appid, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews
          FROM torrents_1337x t
          LEFT JOIN steam_db.steam_cache s ON t.base_name = s.base_name
          ORDER BY t.published_ts DESC, t.id ASC"
@@ -1156,9 +1220,10 @@ pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
             published_ts: row.get(10).unwrap_or(0),
             base_name: row.get(11)?,
             appid: row.get(12)?,
-            review_score_desc: row.get(13)?,
-            positive_percent: row.get(14)?,
-            total_reviews: row.get(15)?,
+            local_cover: row.get(13)?,
+            review_score_desc: row.get(14)?,
+            positive_percent: row.get(15)?,
+            total_reviews: row.get(16)?,
         })
     })?;
 
@@ -1198,7 +1263,7 @@ pub struct TorrentSR {
 /// Fetches records from the skidrow_reloaded table with Steam reviews joined
 pub fn get_torrents_sr(conn: &Connection) -> Result<Vec<TorrentSR>> {
     let mut stmt = conn.prepare(
-        "SELECT sr.id, sr.title, sr.url, sr.image_url, sr.category, sr.date, sr.fetched_at, sr.published_ts, sr.comments,
+        "SELECT sr.id, sr.title, sr.url, COALESCE(s.local_cover, sr.image_url) AS image_url, sr.category, sr.date, sr.fetched_at, sr.published_ts, sr.comments,
                 sr.base_name, s.appid, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews
          FROM skidrow_reloaded sr
          LEFT JOIN steam_db.steam_cache s ON sr.base_name = s.base_name

@@ -49,6 +49,9 @@ export const getSteamStoreUrl = (appid?: number, baseName?: string, fallbackTitl
 // Cover image resolver
 export const getCoverUrl = (localCover?: string): string | null => {
   if (localCover) {
+    if (localCover.startsWith("http://") || localCover.startsWith("https://")) {
+      return localCover;
+    }
     // Use the custom cover protocol URL format for Tauri v2 on Windows
     const filename = localCover.replace("covers/", "");
     return `http://cover.localhost/${filename}`;

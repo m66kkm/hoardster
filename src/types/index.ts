@@ -76,6 +76,7 @@ export interface Torrent1337x {
   // Steam Cache
   base_name?: string;
   appid?: number;
+  local_cover?: string;
   review_score_desc?: number | string;
   positive_percent?: number;
   total_reviews?: number;
