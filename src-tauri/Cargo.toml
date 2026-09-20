@@ -1,6 +1,6 @@
 [package]
 name = "hoardster"
-version = "1.0.13"
+version = "1.0.14"
 description = "Tauri local game index application"
 edition = "2021"
 
