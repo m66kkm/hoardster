@@ -4,6 +4,7 @@ mod scanner;
 mod epic;
 mod steam_api;
 mod steam_service;
+mod data_correction;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -433,6 +434,7 @@ fn parse_page_html(html: &str) -> Vec<db::Torrent1337x> {
                 published_ts,
                 base_name,
                 appid: None,
+                local_cover: None,
                 review_score_desc: None,
                 positive_percent: None,
                 total_reviews: None,
@@ -627,12 +629,23 @@ fn sync_steam_reviews_blocking(
                         if local_path.exists() {
                             entry.local_cover = Some(format!("covers/{}", cover_filename));
                         } else {
-                            let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
-                            if let Ok(img_res) = client_clone.get(&fallback_url).send() {
-                                if img_res.status().is_success() {
-                                    if let Ok(img_bytes) = img_res.bytes() {
-                                        let _ = std::fs::write(&local_path, &img_bytes);
-                                        entry.local_cover = Some(format!("covers/{}", cover_filename));
+                            let mut urls_to_try = Vec::new();
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id));
+                            if let Some(ref u) = entry.local_cover {
+                                if u.starts_with("http") && !urls_to_try.contains(u) {
+                                    urls_to_try.push(u.clone());
+                                }
+                            }
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id));
+
+                            for u in urls_to_try {
+                                if let Ok(img_res) = client_clone.get(&u).send() {
+                                    if img_res.status().is_success() {
+                                        if let Ok(img_bytes) = img_res.bytes() {
+                                            let _ = std::fs::write(&local_path, &img_bytes);
+                                            entry.local_cover = Some(format!("covers/{}", cover_filename));
+                                            break;
+                                        }
                                     }
                                 }
                             }
@@ -958,6 +971,10 @@ async fn scrape_1337x_command(
         }
     }
 
+    if let Ok(conn) = crate::db::get_connection() {
+        let _ = crate::db::sync_game_metadata_covers(&conn);
+    }
+
     let _ = app_handle.emit(&event_name, ScrapeProgress {
         current_page: 100,
         total_pages: 100,
@@ -1243,6 +1260,7 @@ async fn scrape_sr_command(
                 }
             }
             let _ = conn.execute_batch("COMMIT;");
+            let _ = crate::db::sync_game_metadata_covers(&conn);
         }
     }
 
@@ -1287,6 +1305,10 @@ async fn scrape_sr_command(
         if was_cancelled {
             return Ok("Steam 信息获取已被用户取消".to_string());
         }
+    }
+
+    if let Ok(conn) = crate::db::get_connection() {
+        let _ = crate::db::sync_game_metadata_covers(&conn);
     }
 
     let _ = app_handle.emit(event_name, ScrapeProgress {
@@ -1349,6 +1371,14 @@ pub fn run() {
             app.manage(ScrapeState {
                 is_cancelled: Arc::new(AtomicBool::new(false)),
             });
+            // 注册数据校准状态到 Tauri 托管状态
+            let dc_state = data_correction::DataCorrectionState {
+                is_running: Arc::new(AtomicBool::new(false)),
+                cancel_flag: Arc::new(AtomicBool::new(false)),
+            };
+            let dc_is_running = Arc::clone(&dc_state.is_running);
+            let dc_cancel = Arc::clone(&dc_state.cancel_flag);
+            app.manage(dc_state);
 
             // 异步后台校准历史记录中的 base_name（使用事务批量处理，耗时仅几毫秒，完全不阻塞应用启动主线程）
             std::thread::spawn(|| {
@@ -1400,6 +1430,22 @@ pub fn run() {
                             let _ = conn.execute_batch("COMMIT;");
                         }
                     }
+                }
+            });
+
+            // 自动检测数据版本：升级版本后在后台静默执行一次历史数据纠正与校准
+            let app_handle_migration = app.handle().clone();
+            std::thread::spawn(move || {
+                // 等待 3 秒，等主界面加载完成后再开始，避免抢占启动资源
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let need_run = if let Ok(conn) = db::get_connection() {
+                    let ver = db::get_config(&conn, "data_version").ok().flatten();
+                    ver.as_deref() != Some("1")
+                } else {
+                    false
+                };
+                if need_run {
+                    let _ = data_correction::run_data_correction(app_handle_migration, dc_cancel, dc_is_running);
                 }
             });
 
@@ -1464,7 +1510,10 @@ pub fn run() {
             get_torrents_sr_command,
             scrape_sr_command,
             clear_data_sr,
-            clear_data_1337x
+            clear_data_1337x,
+            data_correction::trigger_data_correction_command,
+            data_correction::cancel_data_correction_command,
+            data_correction::get_data_correction_status_command
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");
