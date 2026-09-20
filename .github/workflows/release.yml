@@ -31,6 +31,10 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
+      - name: Generate Changelog
+        id: changelog
+        run: bun scripts/generate-changelog.ts
+
       - name: Build and Release Tauri App
         uses: tauri-apps/tauri-action@v0
         env:
@@ -38,7 +42,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Hoardster ${{ github.ref_name }}"
-          releaseBody: "See the assets below to download and install this version."
+          releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
           prerelease: false
           args: "--target x86_64-pc-windows-msvc"
