@@ -254,7 +254,7 @@ pub fn fetch_steam_game_info_ext(client: &Client, base_name: &str, lang: &str) -
     }
 
     // 获取评价（好评率与描述）
-    let review_url = format!("https://store.steampowered.com/appreviews/{}?json=1&l={}&purchase_type=all", app_id, lang);
+    let review_url = format!("https://store.steampowered.com/appreviews/{}?json=1&language=all&l={}&purchase_type=all", app_id, lang);
     if let Ok(rev_res) = client.get(&review_url).send() {
         if rev_res.status() == reqwest::StatusCode::FORBIDDEN || rev_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
             got_403 = true;
