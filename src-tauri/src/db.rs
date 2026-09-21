@@ -52,6 +52,8 @@ pub struct Game {
     pub review_score_desc: Option<i32>,
     pub positive_percent: Option<i64>,
     pub total_reviews: Option<i64>,
+    pub recent_review_score_desc: Option<i32>,
+    pub recent_positive_percent: Option<i64>,
     pub release_date: Option<String>,
     pub genres: Option<String>,
 }
@@ -162,12 +164,17 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             review_score_desc INTEGER,
             positive_percent INTEGER,
             total_reviews INTEGER,
+            recent_review_score_desc INTEGER,
+            recent_positive_percent INTEGER,
             release_date TEXT,
             last_updated TEXT,
             genres TEXT
         )",
         [],
     )?;
+    // Migration: add recent review columns if they don't exist (for existing databases)
+    conn.execute("ALTER TABLE steam_db.steam_cache ADD COLUMN recent_review_score_desc INTEGER", []).ok();
+    conn.execute("ALTER TABLE steam_db.steam_cache ADD COLUMN recent_positive_percent INTEGER", []).ok();
 
     // 迁移旧的字符串评价数据为整数 (Steam review_score_desc values)
     let _ = conn.execute_batch(
@@ -426,7 +433,7 @@ pub fn remove_scan_path(conn: &Connection, path: &str) -> Result<()> {
 }
 
 pub fn get_steam_cache(conn: &Connection) -> Result<HashMap<String, SteamCacheEntry>> {
-    let mut stmt = conn.prepare("SELECT base_name, appid, name, local_cover, CAST(review_score_desc AS INTEGER), positive_percent, total_reviews, release_date, last_updated, genres FROM steam_db.steam_cache")?;
+    let mut stmt = conn.prepare("SELECT base_name, appid, name, local_cover, CAST(review_score_desc AS INTEGER), positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres FROM steam_db.steam_cache")?;
     let rows = stmt.query_map([], |row| {
         Ok(SteamCacheEntry {
             base_name: row.get(0)?,
@@ -436,9 +443,11 @@ pub fn get_steam_cache(conn: &Connection) -> Result<HashMap<String, SteamCacheEn
             review_score_desc: row.get(4)?,
             positive_percent: row.get(5)?,
             total_reviews: row.get(6)?,
-            release_date: row.get(7)?,
-            last_updated: row.get(8)?,
-            genres: row.get(9)?,
+            recent_review_score_desc: row.get(7)?,
+            recent_positive_percent: row.get(8)?,
+            release_date: row.get(9)?,
+            last_updated: row.get(10)?,
+            genres: row.get(11)?,
         })
     })?;
 
@@ -461,6 +470,8 @@ pub fn clear_steam_cache(conn: &Connection) -> Result<()> {
             review_score_desc INTEGER,
             positive_percent INTEGER,
             total_reviews INTEGER,
+            recent_review_score_desc INTEGER,
+            recent_positive_percent INTEGER,
             release_date TEXT,
             last_updated TEXT,
             genres TEXT
@@ -513,8 +524,8 @@ pub fn sync_game_metadata_covers(conn: &Connection) -> Result<()> {
 
 pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> Result<()> {
     conn.execute(
-        "INSERT INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "INSERT INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(base_name) DO UPDATE SET
             appid = excluded.appid,
             name = COALESCE(excluded.name, steam_cache.name),
@@ -530,6 +541,8 @@ pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> R
             review_score_desc = excluded.review_score_desc,
             positive_percent = excluded.positive_percent,
             total_reviews = excluded.total_reviews,
+            recent_review_score_desc = excluded.recent_review_score_desc,
+            recent_positive_percent = excluded.recent_positive_percent,
             release_date = COALESCE(excluded.release_date, steam_cache.release_date),
             last_updated = excluded.last_updated,
             genres = COALESCE(excluded.genres, steam_cache.genres)",
@@ -541,6 +554,8 @@ pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> R
             entry.review_score_desc,
             entry.positive_percent,
             entry.total_reviews,
+            entry.recent_review_score_desc,
+            entry.recent_positive_percent,
             entry.release_date,
             entry.last_updated,
             entry.genres
@@ -618,7 +633,7 @@ pub fn get_games_list(
 ) -> Result<Vec<Game>> {
     let mut query = String::from(
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.release_date, s.genres
+                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
          FROM games g
          LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
          WHERE 1=1"
@@ -712,8 +727,10 @@ pub fn get_games_list(
             review_score_desc: row.get(16)?,
             positive_percent: row.get(17)?,
             total_reviews: row.get(18)?,
-            release_date: row.get(19)?,
-            genres: row.get(20)?,
+            recent_review_score_desc: row.get(19)?,
+            recent_positive_percent: row.get(20)?,
+            release_date: row.get(21)?,
+            genres: row.get(22)?,
         })
     })?;
 
@@ -728,14 +745,14 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
     // 1. 获取所有重复游戏
     let query = if dup_type == "exact" {
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.release_date, s.genres
+                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
          FROM games g
          LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
          WHERE g.is_exact_dup = 1
          ORDER BY g.base_name ASC, g.original_name ASC"
     } else {
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.release_date, s.genres
+                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
          FROM games g
          LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
          WHERE g.is_version_dup = 1
@@ -765,8 +782,10 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
             review_score_desc: row.get(16)?,
             positive_percent: row.get(17)?,
             total_reviews: row.get(18)?,
-            release_date: row.get(19)?,
-            genres: row.get(20)?,
+            recent_review_score_desc: row.get(19)?,
+            recent_positive_percent: row.get(20)?,
+            release_date: row.get(21)?,
+            genres: row.get(22)?,
         })
     })?;
 
@@ -812,7 +831,7 @@ pub fn get_franchises(conn: &Connection) -> Result<Vec<FranchiseGroup>> {
     // 获取所有代表游戏用于系列分组
     let mut stmt = conn.prepare(
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.release_date, s.genres
+                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
          FROM games g
          LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
          WHERE g.is_representative = 1
@@ -841,8 +860,10 @@ pub fn get_franchises(conn: &Connection) -> Result<Vec<FranchiseGroup>> {
             review_score_desc: row.get(16)?,
             positive_percent: row.get(17)?,
             total_reviews: row.get(18)?,
-            release_date: row.get(19)?,
-            genres: row.get(20)?,
+            recent_review_score_desc: row.get(19)?,
+            recent_positive_percent: row.get(20)?,
+            release_date: row.get(21)?,
+            genres: row.get(22)?,
         })
     })?;
 
@@ -1194,12 +1215,14 @@ pub struct Torrent1337x {
     pub review_score_desc: Option<i32>,
     pub positive_percent: Option<i64>,
     pub total_reviews: Option<i64>,
+    pub recent_review_score_desc: Option<i32>,
+    pub recent_positive_percent: Option<i64>,
 }
 
 pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
     let mut stmt = conn.prepare(
         "SELECT t.id, t.torrent_id, t.name, t.url, t.seeds, t.leeches, t.date, t.size, t.uploader, t.uploader_url, t.published_ts,
-                t.base_name, s.appid, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews
+                t.base_name, s.appid, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent
          FROM torrents_1337x t
          LEFT JOIN steam_db.steam_cache s ON t.base_name = s.base_name
          ORDER BY t.published_ts DESC, t.id ASC"
@@ -1224,6 +1247,8 @@ pub fn get_torrents_1337x(conn: &Connection) -> Result<Vec<Torrent1337x>> {
             review_score_desc: row.get(14)?,
             positive_percent: row.get(15)?,
             total_reviews: row.get(16)?,
+            recent_review_score_desc: row.get(17)?,
+            recent_positive_percent: row.get(18)?,
         })
     })?;
 
@@ -1258,13 +1283,15 @@ pub struct TorrentSR {
     pub review_score_desc: Option<i32>,
     pub positive_percent: Option<i64>,
     pub total_reviews: Option<i64>,
+    pub recent_review_score_desc: Option<i32>,
+    pub recent_positive_percent: Option<i64>,
 }
 
 /// Fetches records from the skidrow_reloaded table with Steam reviews joined
 pub fn get_torrents_sr(conn: &Connection) -> Result<Vec<TorrentSR>> {
     let mut stmt = conn.prepare(
         "SELECT sr.id, sr.title, sr.url, COALESCE(s.local_cover, sr.image_url) AS image_url, sr.category, sr.date, sr.fetched_at, sr.published_ts, sr.comments,
-                sr.base_name, s.appid, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews
+                sr.base_name, s.appid, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent
          FROM skidrow_reloaded sr
          LEFT JOIN steam_db.steam_cache s ON sr.base_name = s.base_name
          ORDER BY sr.published_ts DESC"
@@ -1286,6 +1313,8 @@ pub fn get_torrents_sr(conn: &Connection) -> Result<Vec<TorrentSR>> {
             review_score_desc: row.get(11)?,
             positive_percent: row.get(12)?,
             total_reviews: row.get(13)?,
+            recent_review_score_desc: row.get(14)?,
+            recent_positive_percent: row.get(15)?,
         })
     })?;
 

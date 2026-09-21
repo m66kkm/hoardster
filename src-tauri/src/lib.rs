@@ -438,6 +438,8 @@ fn parse_page_html(html: &str) -> Vec<db::Torrent1337x> {
                 review_score_desc: None,
                 positive_percent: None,
                 total_reviews: None,
+                recent_review_score_desc: None,
+                recent_positive_percent: None,
             });
         }
     }
@@ -1076,6 +1078,8 @@ fn parse_sr_html(html: &str) -> Vec<db::TorrentSR> {
             review_score_desc: None,
             positive_percent: None,
             total_reviews: None,
+            recent_review_score_desc: None,
+            recent_positive_percent: None,
         });
     }
     torrents

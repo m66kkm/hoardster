@@ -320,6 +320,8 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                         review_score_desc: None,
                         positive_percent: None,
                         total_reviews: None,
+                        recent_review_score_desc: None,
+                        recent_positive_percent: None,
                         release_date: None,
                         genres: None,
                     })

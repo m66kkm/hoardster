@@ -97,10 +97,15 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                           e.preventDefault();
                           openExternalUrl(getSteamStoreUrl(game.appid, game.base_name, game.name || game.original_name));
                         }}
-                        title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
+                        title={`${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}${game.recent_review_score_desc && Number(game.recent_review_score_desc) > 0 ? `\n近期: ${getReviewScoreText(t, game.recent_review_score_desc)}${game.recent_positive_percent ? ` (${game.recent_positive_percent}%)` : ""}` : ""}`}
                       >
                         {game.positive_percent !== undefined && game.positive_percent !== null && Number(game.positive_percent) > 0 ? `👍 ${game.positive_percent}% ` : ""}
                         ({getReviewScoreText(t, game.review_score_desc)})
+                        {game.recent_review_score_desc && Number(game.recent_review_score_desc) > 0 && Number(game.recent_review_score_desc) !== Number(game.review_score_desc) && (
+                          <span style={{ fontSize: "0.75rem", marginLeft: "0.35rem", opacity: 0.85 }}>
+                            [近期: <strong className={getRatingColorClass(game.recent_review_score_desc)} style={{ color: "inherit" }}>{getReviewScoreText(t, game.recent_review_score_desc)}</strong>{game.recent_positive_percent ? ` ${game.recent_positive_percent}%` : ""}]
+                          </span>
+                        )}
                         <ExternalLink size={10} style={{ marginLeft: 4, opacity: 0.7 }} />
                       </span>
                     ) : (

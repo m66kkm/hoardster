@@ -21,6 +21,8 @@ export interface Game {
   review_score_desc?: number | string;
   positive_percent?: number;
   total_reviews?: number;
+  recent_review_score_desc?: number | string;
+  recent_positive_percent?: number;
   release_date?: string;
   genres?: string;
 }
@@ -80,6 +82,8 @@ export interface Torrent1337x {
   review_score_desc?: number | string;
   positive_percent?: number;
   total_reviews?: number;
+  recent_review_score_desc?: number | string;
+  recent_positive_percent?: number;
 }
 
 export interface TorrentSR {
@@ -99,4 +103,6 @@ export interface TorrentSR {
   review_score_desc?: number | string;
   positive_percent?: number;
   total_reviews?: number;
+  recent_review_score_desc?: number | string;
+  recent_positive_percent?: number;
 }

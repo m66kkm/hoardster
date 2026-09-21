@@ -453,6 +453,11 @@ export default function Torrents1337Panel({
           const ratingText = hasRating ? getReviewScoreText(t, torrent.review_score_desc) : "";
           const hasPercent = torrent.positive_percent !== undefined && torrent.positive_percent !== null && Number(torrent.positive_percent) > 0;
 
+          const hasRecentRating = torrent.recent_review_score_desc !== undefined && torrent.recent_review_score_desc !== null && torrent.recent_review_score_desc !== "" && Number(torrent.recent_review_score_desc) > 0;
+          const recentRatingText = hasRecentRating ? getReviewScoreText(t, torrent.recent_review_score_desc) : "";
+          const hasRecentPercent = torrent.recent_positive_percent !== undefined && torrent.recent_positive_percent !== null && Number(torrent.recent_positive_percent) > 0;
+          const showRecent = hasRecentRating && hasRating && Number(torrent.recent_review_score_desc) !== Number(torrent.review_score_desc);
+
           return (
             <div 
               key={uniqueKey} 
@@ -462,7 +467,7 @@ export default function Torrents1337Panel({
                 e.preventDefault();
                 handleCopyUrl(torrent.url, torrent.name);
               }}
-              title={`${torrent.name}\n${formatPublishDate(torrent.published_ts, torrent.date, i18n.language)}\n大小: ${formatSizeGB(torrent.size)} | 做种: ${torrent.seeds.toLocaleString()} | 下载: ${torrent.leeches.toLocaleString()}${torrent.uploader ? ` | 发布者: ${torrent.uploader}` : ""}${hasRating ? `\nSteam评价: ${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}` : "\nSteam评价: 暂无评价"}\n\n(左键打开发布页 / 点击 Steam 评价打开 Steam / 右键复制链接)`}
+              title={`${torrent.name}\n${formatPublishDate(torrent.published_ts, torrent.date, i18n.language)}\n大小: ${formatSizeGB(torrent.size)} | 做种: ${torrent.seeds.toLocaleString()} | 下载: ${torrent.leeches.toLocaleString()}${torrent.uploader ? ` | 发布者: ${torrent.uploader}` : ""}${hasRating ? `\nSteam评价: ${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}${showRecent ? `\n近期评价: ${recentRatingText}${hasRecentPercent ? ` (${torrent.recent_positive_percent}%)` : ""}` : ""}` : "\nSteam评价: 暂无评价"}\n\n(左键打开发布页 / 点击 Steam 评价打开 Steam / 右键复制链接)`}
             >
               {hasRating && (
                 <div 
@@ -472,10 +477,16 @@ export default function Torrents1337Panel({
                     const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.name);
                     handleOpenUrl(steamUrl);
                   }}
-                  title={`${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
+                  title={`${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}${showRecent ? `\n近期: ${recentRatingText}${hasRecentPercent ? ` (${torrent.recent_positive_percent}%)` : ""}` : ""}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
                 >
                   {hasPercent && <span>👍 {torrent.positive_percent}%</span>}
                   <span className="rating-desc">{ratingText}</span>
+                  {showRecent && (
+                    <span className="rating-recent" style={{ fontSize: "0.6rem", opacity: 0.85, display: "block", lineHeight: 1.2 }}>
+                      近期: <span className={getRatingColorClass(torrent.recent_review_score_desc)} style={{ color: "inherit" }}>{recentRatingText}</span>
+                      {hasRecentPercent && ` ${torrent.recent_positive_percent}%`}
+                    </span>
+                  )}
                   <ExternalLink size={10} style={{ opacity: 0.8, marginLeft: 2 }} />
                 </div>
               )}

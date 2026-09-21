@@ -24,6 +24,13 @@ export default function GameCard({ game, onOpenFolder }: GameCardProps) {
   const ratingText = hasRating ? getReviewScoreText(t, game.review_score_desc) : "";
   const hasPercent = game.positive_percent !== undefined && game.positive_percent !== null && Number(game.positive_percent) > 0;
 
+  const hasRecentRating = game.recent_review_score_desc !== undefined && game.recent_review_score_desc !== null && game.recent_review_score_desc !== "" && Number(game.recent_review_score_desc) > 0;
+  const recentRatingText = hasRecentRating ? getReviewScoreText(t, game.recent_review_score_desc) : "";
+  const hasRecentPercent = game.recent_positive_percent !== undefined && game.recent_positive_percent !== null && Number(game.recent_positive_percent) > 0;
+
+  // Show recent rating if it differs from all-time rating
+  const showRecent = hasRecentRating && hasRating && Number(game.recent_review_score_desc) !== Number(game.review_score_desc);
+
   const handleSteamClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     const url = getSteamStoreUrl(game.appid, game.base_name, game.name || game.original_name);
@@ -40,10 +47,16 @@ export default function GameCard({ game, onOpenFolder }: GameCardProps) {
         <div 
           className={`rating-overlay ${getRatingColorClass(game.review_score_desc)}`}
           onClick={handleSteamClick}
-          title={`${ratingText}${hasPercent ? ` (${game.positive_percent}%)` : ""}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
+          title={`${ratingText}${hasPercent ? ` (${game.positive_percent}%)` : ""}${showRecent ? `\n近期: ${recentRatingText}${hasRecentPercent ? ` (${game.recent_positive_percent}%)` : ""}` : ""}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
         >
           {hasPercent && <span>👍 {game.positive_percent}%</span>}
           <span className="rating-desc">{ratingText}</span>
+          {showRecent && (
+            <span className="rating-recent" style={{ fontSize: "0.6rem", opacity: 0.85, display: "block", lineHeight: 1.2 }}>
+              近期: <span className={getRatingColorClass(game.recent_review_score_desc)} style={{ color: "inherit" }}>{recentRatingText}</span>
+              {hasRecentPercent && ` ${game.recent_positive_percent}%`}
+            </span>
+          )}
           <ExternalLink size={10} style={{ opacity: 0.8, marginLeft: 2 }} />
         </div>
       )}

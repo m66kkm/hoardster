@@ -14,6 +14,8 @@ pub struct SteamCacheEntry {
     pub review_score_desc: Option<i32>,
     pub positive_percent: Option<i64>,
     pub total_reviews: Option<i64>,
+    pub recent_review_score_desc: Option<i32>,
+    pub recent_positive_percent: Option<i64>,
     pub release_date: Option<String>,
     pub last_updated: Option<String>,
     pub genres: Option<String>,
@@ -41,17 +43,22 @@ pub fn init_steam_db(conn: &Connection) -> Result<()> {
             review_score_desc INTEGER,
             positive_percent INTEGER,
             total_reviews INTEGER,
+            recent_review_score_desc INTEGER,
+            recent_positive_percent INTEGER,
             release_date TEXT,
             last_updated TEXT,
             genres TEXT
         )",
         [],
     )?;
+    // Migration: add recent review columns if they don't exist (for existing databases)
+    conn.execute("ALTER TABLE steam_cache ADD COLUMN recent_review_score_desc INTEGER", []).ok();
+    conn.execute("ALTER TABLE steam_cache ADD COLUMN recent_positive_percent INTEGER", []).ok();
     Ok(())
 }
 
 pub fn get_steam_cache(conn: &Connection) -> Result<HashMap<String, SteamCacheEntry>> {
-    let mut stmt = conn.prepare("SELECT base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres FROM steam_cache")?;
+    let mut stmt = conn.prepare("SELECT base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres FROM steam_cache")?;
     let cache_iter = stmt.query_map([], |row| {
         Ok(SteamCacheEntry {
             base_name: row.get(0)?,
@@ -61,9 +68,11 @@ pub fn get_steam_cache(conn: &Connection) -> Result<HashMap<String, SteamCacheEn
             review_score_desc: row.get(4)?,
             positive_percent: row.get(5)?,
             total_reviews: row.get(6)?,
-            release_date: row.get(7)?,
-            last_updated: row.get(8)?,
-            genres: row.get(9)?,
+            recent_review_score_desc: row.get(7)?,
+            recent_positive_percent: row.get(8)?,
+            release_date: row.get(9)?,
+            last_updated: row.get(10)?,
+            genres: row.get(11)?,
         })
     })?;
 
@@ -82,8 +91,8 @@ pub fn clear_steam_cache(conn: &Connection) -> Result<()> {
 
 pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, release_date, last_updated, genres)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT OR REPLACE INTO steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             entry.base_name,
             entry.appid,
@@ -92,6 +101,8 @@ pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> R
             entry.review_score_desc,
             entry.positive_percent,
             entry.total_reviews,
+            entry.recent_review_score_desc,
+            entry.recent_positive_percent,
             entry.release_date,
             entry.last_updated,
             entry.genres
@@ -114,6 +125,8 @@ pub fn fetch_steam_game_info_ext(client: &Client, base_name: &str, lang: &str) -
         review_score_desc: None,
         positive_percent: None,
         total_reviews: None,
+        recent_review_score_desc: None,
+        recent_positive_percent: None,
         release_date: None,
         last_updated: Some(chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()),
         genres: None,
@@ -253,7 +266,7 @@ pub fn fetch_steam_game_info_ext(client: &Client, base_name: &str, lang: &str) -
         }
     }
 
-    // 获取评价（好评率与描述）
+    // 获取评价（好评率与描述）- 全部评测
     let review_url = format!("https://store.steampowered.com/appreviews/{}?json=1&language=all&l={}&purchase_type=all", app_id, lang);
     if let Ok(rev_res) = client.get(&review_url).send() {
         if rev_res.status() == reqwest::StatusCode::FORBIDDEN || rev_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -272,6 +285,26 @@ pub fn fetch_steam_game_info_ext(client: &Client, base_name: &str, lang: &str) -
                     } else if total > 0.0 {
                         entry.total_reviews = Some(total as i64);
                         entry.positive_percent = None;
+                    }
+                }
+            }
+        }
+    }
+
+    // 获取最近评测（近30天）
+    let recent_review_url = format!("https://store.steampowered.com/appreviews/{}?json=1&language=all&l={}&purchase_type=all&day_range=30", app_id, lang);
+    if let Ok(rev_res) = client.get(&recent_review_url).send() {
+        if rev_res.status() == reqwest::StatusCode::FORBIDDEN || rev_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            got_403 = true;
+        } else if rev_res.status().is_success() {
+            if let Ok(rev_json) = rev_res.json::<Value>() {
+                if let Some(query_summary) = rev_json.get("query_summary") {
+                    let score = query_summary.get("review_score").and_then(|d| d.as_i64()).unwrap_or(0);
+                    let total = query_summary.get("total_reviews").and_then(|t| t.as_f64()).unwrap_or(0.0);
+                    let pct = query_summary.get("total_positive").and_then(|t| t.as_f64()).unwrap_or(0.0);
+                    if total >= 10.0 && score > 0 {
+                        entry.recent_review_score_desc = Some(score as i32);
+                        entry.recent_positive_percent = Some(((pct / total) * 100.0) as i64);
                     }
                 }
             }
