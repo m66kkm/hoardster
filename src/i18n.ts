@@ -324,8 +324,12 @@ const resources = {
       "reviewScore_6": "多半好评",
       "reviewScore_7": "好评",
       "reviewScore_8": "特别好评",
-      "reviewScore_9": "好评如潮"
-
+      "reviewScore_9": "好评如潮",
+      "appTitle": "Hoardster - 本地游戏库索引控制台",
+      "titlebarMinimize": "最小化",
+      "titlebarMaximize": "最大化",
+      "titlebarRestore": "向下还原",
+      "titlebarClose": "关闭"
     }
   },
   english: {
@@ -597,8 +601,12 @@ const resources = {
       "reviewScore_6": "Mostly Positive",
       "reviewScore_7": "Positive",
       "reviewScore_8": "Very Positive",
-      "reviewScore_9": "Overwhelmingly Positive"
-
+      "reviewScore_9": "Overwhelmingly Positive",
+      "appTitle": "Hoardster - Local Game Index Console",
+      "titlebarMinimize": "Minimize",
+      "titlebarMaximize": "Maximize",
+      "titlebarRestore": "Restore Down",
+      "titlebarClose": "Close"
     }
   }
 };

@@ -15,7 +15,9 @@
         "label": "main",
         "title": "本地游戏库索引控制台",
         "width": 1280,
-        "height": 850
+        "height": 850,
+        "decorations": false,
+        "resizable": true
       }
     ],
     "security": {
