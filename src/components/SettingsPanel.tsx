@@ -10,8 +10,10 @@ import { useDataCorrection } from "../hooks/useDataCorrection";
 
 interface SettingsPanelProps {
   activeTab: string;
-  scanPaths: string[];
-  addScanPath: () => void;
+  installedPaths: string[];
+  archivedPaths: string[];
+  addInstalledPath: () => void;
+  addArchivedPath: () => void;
   removeScanPath: (path: string) => void;
   startScan: () => void;
   cancelScan: () => void;
@@ -29,8 +31,10 @@ interface SettingsPanelProps {
 
 export default function SettingsPanel({
   activeTab,
-  scanPaths,
-  addScanPath,
+  installedPaths,
+  archivedPaths,
+  addInstalledPath,
+  addArchivedPath,
   removeScanPath,
   startScan,
   cancelScan,
@@ -242,24 +246,65 @@ export default function SettingsPanel({
 
       {activeTab === "local" && (
         <>
+          {/* 1. 扫描安装目录 */}
           <div className="settings-section">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
-              <h3 style={{ margin: 0 }}>{t("scanPathsMgmt")}</h3>
-              <button className="action-btn" onClick={addScanPath} style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+              <h3 style={{ margin: 0 }}>{t("scanInstalledPaths")}</h3>
+              <button className="action-btn" onClick={addInstalledPath} style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}>
                 <Plus size={16} />
-                {t("addPath")}
+                {t("addInstalledPath")}
               </button>
             </div>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+              {t("scanInstalledDesc")}
+            </p>
 
             <div className="paths-list">
-              {scanPaths.map((path) => (
-                <div key={path} className="path-item">
-                  <span className="path-text">{path}</span>
-                  <button className="remove-btn" onClick={() => removeScanPath(path)}>
-                    {t("remove")}
-                  </button>
+              {installedPaths.length === 0 ? (
+                <div style={{ padding: "0.75rem 1rem", color: "var(--text-secondary)", fontSize: "0.85rem", fontStyle: "italic", background: "rgba(255,255,255,0.02)", borderRadius: "8px", border: "1px dashed var(--panel-border)" }}>
+                  {t("noInstalledPaths")}
                 </div>
-              ))}
+              ) : (
+                installedPaths.map((path) => (
+                  <div key={path} className="path-item">
+                    <span className="path-text">{path}</span>
+                    <button className="remove-btn" onClick={() => removeScanPath(path)}>
+                      {t("remove")}
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* 2. 扫描归档路径 */}
+          <div className="settings-section" style={{ marginTop: "1.5rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+              <h3 style={{ margin: 0 }}>{t("scanArchivedPaths")}</h3>
+              <button className="action-btn" onClick={addArchivedPath} style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}>
+                <Plus size={16} />
+                {t("addArchivedPath")}
+              </button>
+            </div>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+              {t("scanArchivedDesc")}
+            </p>
+
+            <div className="paths-list">
+              {archivedPaths.length === 0 ? (
+                <div style={{ padding: "0.75rem 1rem", color: "var(--text-secondary)", fontSize: "0.85rem", fontStyle: "italic", background: "rgba(255,255,255,0.02)", borderRadius: "8px", border: "1px dashed var(--panel-border)" }}>
+                  {t("noArchivedPaths")}
+                </div>
+              ) : (
+                archivedPaths.map((path) => (
+                  <div key={path} className="path-item">
+                    <span className="path-text">{path}</span>
+                    <button className="remove-btn" onClick={() => removeScanPath(path)}>
+                      {t("remove")}
+                    </button>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 

@@ -67,9 +67,23 @@ export const getCoverUrl = (localCover?: string): string | null => {
 };
 
 export const getTypeBadgeClass = (type?: string): string => {
-  if (type === "Installed" || type === "Directory") return "badge-dir";
-  if (type === "Archive") return "badge-ver";
-  return "badge-iso";
+  if (!type) return "badge-dir";
+  const lower = type.toLowerCase();
+  if (lower === "installed" || lower === "directory" || lower === "安装") return "badge-dir";
+  if (lower === "archive" || lower === "archived" || lower === "iso" || lower === "归档") return "badge-ver";
+  return "badge-ver";
+};
+
+export const getTypeLabel = (type?: string, t?: any): string => {
+  if (!type) return "";
+  const lower = type.toLowerCase();
+  if (lower === "installed" || lower === "directory" || lower === "安装") {
+    return t ? (t("typeInstalled") || "安装") : "安装";
+  }
+  if (lower === "archive" || lower === "archived" || lower === "iso" || lower === "归档") {
+    return t ? (t("typeArchived") || "归档") : "归档";
+  }
+  return type;
 };
 
 // Fallback gradient generator

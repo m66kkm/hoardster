@@ -1,189 +1,61 @@
-import { useState, useEffect } from "react";
 import type { Game } from "../types";
-import { 
-  getRatingColorClass, 
-  getCoverUrl, 
-  getGradientsForName, 
-  getReviewScoreText, 
-  getTypeBadgeClass,
-  getSteamStoreUrl,
-  openExternalUrl
-} from "../utils/helpers";
+import { getTypeBadgeClass, getTypeLabel } from "../utils/helpers";
 import { useTranslation } from "react-i18next";
-import { ExternalLink, Gamepad2 } from "lucide-react";
+import CommonPosterCard from "./shared/CommonPosterCard";
 
 interface GameCardProps {
   game: Game;
   onOpenFolder: (path: string) => void;
   onContextMenu?: (e: React.MouseEvent, game: Game) => void;
+  hideTypeTag?: boolean;
+  hideLocation?: boolean;
 }
 
-export default function GameCard({ game, onOpenFolder, onContextMenu }: GameCardProps) {
+export default function GameCard({
+  game,
+  onOpenFolder,
+  onContextMenu,
+  hideTypeTag = false,
+  hideLocation = false,
+}: GameCardProps) {
   const { t } = useTranslation();
-  const cover = getCoverUrl(game.local_cover);
-  const [imgError, setImgError] = useState(false);
-  const [isLandscape, setIsLandscape] = useState(() => {
-    if (!cover) return false;
-    return cover.includes("header") || cover.includes("capsule");
-  });
+  const title = game.name || game.original_name;
+  const typeLabel = getTypeLabel(game.type, t);
 
-  useEffect(() => {
-    setImgError(false);
-    setIsLandscape(Boolean(cover && (cover.includes("header") || cover.includes("capsule"))));
-  }, [cover]);
-
-  const hasRating = game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" && Number(game.review_score_desc) > 0;
-  const ratingText = hasRating ? getReviewScoreText(t, game.review_score_desc) : "";
-  const hasPercent = game.positive_percent !== undefined && game.positive_percent !== null && Number(game.positive_percent) > 0;
-
-  const hasRecentRating = game.recent_review_score_desc !== undefined && game.recent_review_score_desc !== null && game.recent_review_score_desc !== "" && Number(game.recent_review_score_desc) > 0;
-  const recentRatingText = hasRecentRating ? getReviewScoreText(t, game.recent_review_score_desc) : "";
-  const hasRecentPercent = game.recent_positive_percent !== undefined && game.recent_positive_percent !== null && Number(game.recent_positive_percent) > 0;
-
-  // Show recent rating if it differs from all-time rating
-  const showRecent = hasRecentRating && hasRating && Number(game.recent_review_score_desc) !== Number(game.review_score_desc);
-
-  const handleSteamClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    const url = getSteamStoreUrl(game.appid, game.base_name, game.name || game.original_name);
-    openExternalUrl(url);
-  };
+  const showMeta = !hideTypeTag || !hideLocation;
 
   return (
-    <div 
-      className="poster-card" 
+    <CommonPosterCard
+      title={title}
+      coverUrl={game.local_cover}
+      fallbackSeed={game.original_name}
+      appid={game.appid}
+      baseName={game.base_name}
+      reviewScoreDesc={game.review_score_desc}
+      positivePercent={game.positive_percent}
+      recentReviewScoreDesc={game.recent_review_score_desc}
+      recentPositivePercent={game.recent_positive_percent}
       onClick={() => onOpenFolder(game.full_path)}
-      onContextMenu={(e) => {
-        if (onContextMenu) {
-          onContextMenu(e, game);
-        }
-      }}
-      title={`${game.original_name}\nSteam类型: ${game.genres || "未知"}\n文件类别: ${game.type}\n路径: ${game.full_path}\n大小: ${game.size}${hasRating ? `\nSteam评价: ${ratingText}${hasPercent ? ` (${game.positive_percent}%)` : ""}` : ""}\n\n(左键打开文件夹 / 右键操作菜单 / 点击 Steam 评价打开 Steam)`}
-    >
-      {hasRating && (
-        <div 
-          className={`rating-overlay ${getRatingColorClass(game.review_score_desc)}`}
-          onClick={handleSteamClick}
-          title={`${ratingText}${hasPercent ? ` (${game.positive_percent}%)` : ""}${showRecent ? `\n近期: ${recentRatingText}${hasRecentPercent ? ` (${game.recent_positive_percent}%)` : ""}` : ""}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
-        >
-          {hasPercent && <span>👍 {game.positive_percent}%</span>}
-          <span className="rating-desc">{ratingText}</span>
-          {showRecent && (
-            <span className="rating-recent" style={{ fontSize: "0.6rem", opacity: 0.85, display: "block", lineHeight: 1.2 }}>
-              近期: <span className={getRatingColorClass(game.recent_review_score_desc)} style={{ color: "inherit" }}>{recentRatingText}</span>
-              {hasRecentPercent && ` ${game.recent_positive_percent}%`}
-            </span>
-          )}
-          <ExternalLink size={10} style={{ opacity: 0.8, marginLeft: 2 }} />
-        </div>
-      )}
-      
-      {cover && !imgError ? (
-        isLandscape ? (
-          <div className="poster-landscape-wrapper">
-            <img 
-              className="poster-landscape-bg" 
-              src={cover} 
-              alt="" 
-              aria-hidden="true" 
-            />
-            <div className="poster-landscape-inner">
-              <img 
-                className="poster-landscape-banner" 
-                src={cover} 
-                alt={game.name || game.original_name} 
-                loading="lazy" 
-                referrerPolicy="no-referrer"
-                onError={() => setImgError(true)}
-              />
-            </div>
-          </div>
-        ) : (
-          <img 
-            className="poster-img" 
-            src={cover} 
-            alt={game.name || game.original_name} 
-            loading="lazy" 
-            referrerPolicy="no-referrer"
-            onLoad={(e) => {
-              const img = e.currentTarget;
-              if (img.naturalWidth && img.naturalHeight) {
-                if (img.naturalWidth / img.naturalHeight > 0.85) {
-                  setIsLandscape(true);
-                }
-              }
-            }}
-            onError={() => setImgError(true)}
-          />
-        )
-      ) : (
-        <div className="poster-fallback" style={{ background: getGradientsForName(game.original_name) }}>
-          <div className="poster-fallback-icon">🎮</div>
-          <div className="poster-fallback-title" title={game.name || game.original_name}>{game.name || game.original_name}</div>
-          <div style={{ fontSize: "0.75rem", color: "rgba(255,255,255,0.6)", marginTop: "auto", display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", flexWrap: "wrap", gap: "0.25rem" }}>
-            <div style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}>
-              <span className={`badge ${getTypeBadgeClass(game.type)}`} style={{ background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", padding: "0.15rem 0.5rem" }}>
-                {game.type}
-              </span>
-              {(game.appid || hasRating) && (
-                <span 
-                  className="badge badge-dir"
-                  onClick={handleSteamClick}
-                  title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
-                  style={{ 
-                    fontSize: "0.65rem", 
-                    padding: "0.15rem 0.4rem", 
-                    background: "rgba(0, 242, 254, 0.15)", 
-                    border: "1px solid rgba(0, 242, 254, 0.35)", 
-                    color: "#00f2fe",
-                    cursor: "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "3px"
-                  }}
-                >
-                  <Gamepad2 size={10} /> Steam ↗
+      onContextMenu={(e) => onContextMenu?.(e, game)}
+      tooltip={`${game.original_name}\nSteam类型: ${game.genres || "未知"}\n文件类别: ${typeLabel}\n路径: ${game.full_path}\n大小: ${game.size}\n\n(左键打开文件夹 / 右键操作菜单 / 点击 Steam 评价打开 Steam)`}
+      metaSecondary={
+        showMeta ? (
+          <>
+            {!hideTypeTag && (
+              <div style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}>
+                <span className={`badge ${getTypeBadgeClass(game.type)}`}>
+                  {typeLabel}
                 </span>
-              )}
-            </div>
-            <span style={{ fontWeight: 600 }}>{game.source_path.substring(0, 2)}</span>
-          </div>
-        </div>
-      )}
-      
-      {cover && !imgError && (
-        <div className="poster-info">
-          <div className="poster-title" title={game.name || game.original_name}>{game.name || game.original_name}</div>
-          <div className="poster-meta" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}>
-              <span className={`badge ${getTypeBadgeClass(game.type)}`}>
-                {game.type}
+              </div>
+            )}
+            {!hideLocation && (
+              <span style={{ opacity: 0.8, fontSize: "0.75rem", fontWeight: 600 }}>
+                {game.source_path ? game.source_path.substring(0, 2) : ""}
               </span>
-              {(game.appid || hasRating) && (
-                <span 
-                  className="badge badge-dir"
-                  onClick={handleSteamClick}
-                  title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
-                  style={{ 
-                    fontSize: "0.65rem", 
-                    padding: "0.15rem 0.4rem", 
-                    background: "rgba(0, 242, 254, 0.15)", 
-                    border: "1px solid rgba(0, 242, 254, 0.35)", 
-                    color: "#00f2fe",
-                    cursor: "pointer",
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: "3px"
-                  }}
-                >
-                  <Gamepad2 size={10} /> Steam ↗
-                </span>
-              )}
-            </div>
-            <span style={{ opacity: 0.8, fontSize: "0.75rem", fontWeight: 600 }}>{game.source_path.substring(0, 2)}</span>
-          </div>
-        </div>
-      )}
-    </div>
+            )}
+          </>
+        ) : null
+      }
+    />
   );
 }

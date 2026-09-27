@@ -1,105 +1,16 @@
 import { useState, useEffect } from "react";
-import { Download, ExternalLink, RefreshCw, Gamepad2, ArrowUpCircle } from "lucide-react";
+import { Download, RefreshCw, ArrowUpCircle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import { useTranslation } from "react-i18next";
 import { mapSteamLangToBCP47 } from "../i18n";
 import type { Torrent1337x } from "../types";
-import { 
-  getRatingColorClass, 
-  getReviewScoreText, 
-  getSteamStoreUrl,
-  getCoverUrl,
-  getGradientsForName
-} from "../utils/helpers";
+import { getCoverUrl } from "../utils/helpers";
 import SearchBox from "./shared/SearchBox";
 import FilterSelect from "./shared/FilterSelect";
 import SortSelect from "./shared/SortSelect";
 import Pagination from "./shared/Pagination";
-
-function TorrentCoverImage({ torrent }: { torrent: Torrent1337x }) {
-  const [srcIndex, setSrcIndex] = useState(0);
-  const [isLandscape, setIsLandscape] = useState(false);
-
-  const cover = getCoverUrl(torrent.local_cover);
-  const steamLibraryCover = torrent.appid 
-    ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${torrent.appid}/library_600x900_2x.jpg` 
-    : null;
-  const steamCapsuleCover = torrent.appid
-    ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${torrent.appid}/capsule_616x353.jpg`
-    : null;
-  const steamHeaderCover = torrent.appid
-    ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${torrent.appid}/header.jpg`
-    : null;
-
-  const candidates = [cover, steamLibraryCover, steamCapsuleCover, steamHeaderCover].filter(
-    (url): url is string => Boolean(url && url.length > 0)
-  );
-  const sources = Array.from(new Set(candidates));
-
-  useEffect(() => {
-    setSrcIndex(0);
-    setIsLandscape(false);
-  }, [torrent.local_cover, torrent.appid]);
-
-  if (srcIndex >= sources.length) {
-    return (
-      <div className="poster-fallback" style={{ background: getGradientsForName(torrent.name) }}>
-        <div className="poster-fallback-icon">🎮</div>
-        <div className="poster-fallback-title" title={torrent.name}>{torrent.name}</div>
-      </div>
-    );
-  }
-
-  const currentSrc = sources[srcIndex];
-
-  if (isLandscape) {
-    return (
-      <div className="poster-landscape-wrapper">
-        <img 
-          className="poster-landscape-bg"
-          src={currentSrc}
-          alt=""
-          aria-hidden="true"
-        />
-        <div className="poster-landscape-inner">
-          <img 
-            className="poster-landscape-banner"
-            src={currentSrc}
-            alt={torrent.name}
-            referrerPolicy="no-referrer"
-            loading="lazy"
-            onError={() => {
-              setIsLandscape(false);
-              setSrcIndex(prev => prev + 1);
-            }}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <img 
-      className="poster-img"
-      src={currentSrc} 
-      alt={torrent.name}
-      referrerPolicy="no-referrer"
-      loading="lazy"
-      onLoad={(e) => {
-        const img = e.currentTarget;
-        if (img.naturalWidth && img.naturalHeight) {
-          if (img.naturalWidth / img.naturalHeight > 1.15) {
-            setIsLandscape(true);
-          }
-        }
-      }}
-      onError={() => {
-        setIsLandscape(false);
-        setSrcIndex(prev => prev + 1);
-      }}
-    />
-  );
-}
+import { useDynamicGrid } from "../hooks/useDynamicGrid";
+import CommonPosterCard, { SteamStoreBadge } from "./shared/CommonPosterCard";
 
 const formatPublishDate = (ts: number, originalDate: string, lang: string): string => {
   if (!ts) return originalDate; // Fallback for old data with published_ts = 0
@@ -184,15 +95,7 @@ export default function Torrents1337Panel({
   
   // Pagination State
   const [currentPage, setCurrentPage] = useState<number>(1);
-  const pageSize = 30;
-
-  // Scroll to top when page changes
-  useEffect(() => {
-    const scrollContainer = document.querySelector(".tab-content-scrollable");
-    if (scrollContainer) {
-      scrollContainer.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  }, [currentPage]);
+  const { containerRef, gridRef, effectivePageSize } = useDynamicGrid({ targetPageSize: 30 });
 
   const loadData = () => {
     invoke<Torrent1337x[]>("get_torrents_1337x_command")
@@ -305,11 +208,17 @@ export default function Torrents1337Panel({
 
   // Paginate filtered torrents
   const totalItems = filteredTorrents.length;
-  const totalPages = Math.ceil(totalItems / pageSize) || 1;
+  const totalPages = Math.ceil(totalItems / effectivePageSize) || 1;
   const paginatedTorrents = filteredTorrents.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize
+    (currentPage - 1) * effectivePageSize,
+    currentPage * effectivePageSize
   );
+
+  useEffect(() => {
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const sortOptions = [
     { value: "date-asc", label: t("t1337SortDateAsc") },
@@ -342,7 +251,7 @@ export default function Torrents1337Panel({
   };
 
   return (
-    <div className="panel" style={{ display: "block" }}>
+    <div className="panel" ref={containerRef} style={{ display: "block" }}>
       {/* Syncing Progress Banner */}
       {isScraping && (
         <div style={{
@@ -446,59 +355,37 @@ export default function Torrents1337Panel({
         />
       </section>
 
-      <div className="posters-grid">
+      <div className="posters-grid" ref={gridRef}>
         {paginatedTorrents.map((torrent) => {
           const uniqueKey = torrent.torrent_id || torrent.name;
           const hasRating = torrent.review_score_desc !== undefined && torrent.review_score_desc !== null && torrent.review_score_desc !== "" && Number(torrent.review_score_desc) > 0;
-          const ratingText = hasRating ? getReviewScoreText(t, torrent.review_score_desc) : "";
-          const hasPercent = torrent.positive_percent !== undefined && torrent.positive_percent !== null && Number(torrent.positive_percent) > 0;
-
-          const hasRecentRating = torrent.recent_review_score_desc !== undefined && torrent.recent_review_score_desc !== null && torrent.recent_review_score_desc !== "" && Number(torrent.recent_review_score_desc) > 0;
-          const recentRatingText = hasRecentRating ? getReviewScoreText(t, torrent.recent_review_score_desc) : "";
-          const hasRecentPercent = torrent.recent_positive_percent !== undefined && torrent.recent_positive_percent !== null && Number(torrent.recent_positive_percent) > 0;
-          const showRecent = hasRecentRating && hasRating && Number(torrent.recent_review_score_desc) !== Number(torrent.review_score_desc);
+          const coverCandidates = [
+            getCoverUrl(torrent.local_cover),
+            torrent.appid ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${torrent.appid}/library_600x900_2x.jpg` : null,
+            torrent.appid ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${torrent.appid}/capsule_616x353.jpg` : null,
+            torrent.appid ? `https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/${torrent.appid}/header.jpg` : null,
+          ];
 
           return (
-            <div 
-              key={uniqueKey} 
-              className="poster-card"
+            <CommonPosterCard
+              key={uniqueKey}
+              title={torrent.name}
+              coverUrls={coverCandidates}
+              fallbackSeed={torrent.name}
+              appid={torrent.appid}
+              baseName={torrent.base_name}
+              reviewScoreDesc={torrent.review_score_desc}
+              positivePercent={torrent.positive_percent}
+              recentReviewScoreDesc={torrent.recent_review_score_desc}
+              recentPositivePercent={torrent.recent_positive_percent}
               onClick={() => handleOpenUrl(torrent.url)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 handleCopyUrl(torrent.url, torrent.name);
               }}
-              title={`${torrent.name}\n${formatPublishDate(torrent.published_ts, torrent.date, i18n.language)}\n大小: ${formatSizeGB(torrent.size)} | 做种: ${torrent.seeds.toLocaleString()} | 下载: ${torrent.leeches.toLocaleString()}${torrent.uploader ? ` | 发布者: ${torrent.uploader}` : ""}${hasRating ? `\nSteam评价: ${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}${showRecent ? `\n近期评价: ${recentRatingText}${hasRecentPercent ? ` (${torrent.recent_positive_percent}%)` : ""}` : ""}` : "\nSteam评价: 暂无评价"}\n\n(左键打开发布页 / 点击 Steam 评价打开 Steam / 右键复制链接)`}
-            >
-              {hasRating && (
-                <div 
-                  className={`rating-overlay ${getRatingColorClass(torrent.review_score_desc)}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.name);
-                    handleOpenUrl(steamUrl);
-                  }}
-                  title={`${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}${showRecent ? `\n近期: ${recentRatingText}${hasRecentPercent ? ` (${torrent.recent_positive_percent}%)` : ""}` : ""}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
-                >
-                  {hasPercent && <span>👍 {torrent.positive_percent}%</span>}
-                  <span className="rating-desc">{ratingText}</span>
-                  {showRecent && (
-                    <span className="rating-recent" style={{ fontSize: "0.6rem", opacity: 0.85, display: "block", lineHeight: 1.2 }}>
-                      近期: <span className={getRatingColorClass(torrent.recent_review_score_desc)} style={{ color: "inherit" }}>{recentRatingText}</span>
-                      {hasRecentPercent && ` ${torrent.recent_positive_percent}%`}
-                    </span>
-                  )}
-                  <ExternalLink size={10} style={{ opacity: 0.8, marginLeft: 2 }} />
-                </div>
-              )}
-
-              <TorrentCoverImage torrent={torrent} />
-              
-              <div className="poster-info">
-                <div className="poster-title" title={torrent.name}>
-                  {torrent.name}
-                </div>
-                
-                <div className="poster-meta" style={{ marginBottom: "0.25rem", color: "rgba(255,255,255,0.7)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              tooltip={`${torrent.name}\n${formatPublishDate(torrent.published_ts, torrent.date, i18n.language)}\n大小: ${formatSizeGB(torrent.size)} | 做种: ${torrent.seeds.toLocaleString()} | 下载: ${torrent.leeches.toLocaleString()}${torrent.uploader ? ` | 发布者: ${torrent.uploader}` : ""}\n\n(左键打开发布页 / 点击 Steam 评价打开 Steam / 右键复制链接)`}
+              metaPrimary={
+                <>
                   <span>{formatPublishDate(torrent.published_ts, torrent.date, i18n.language)}</span>
                   <span 
                     style={{ display: "flex", alignItems: "center", gap: "0.25rem", color: "#10b981", fontWeight: 650 }}
@@ -507,32 +394,16 @@ export default function Torrents1337Panel({
                     <ArrowUpCircle size={12} />
                     {torrent.seeds.toLocaleString()}
                   </span>
-                </div>
-                
-                <div className="poster-meta" style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem", justifyContent: "flex-start", alignItems: "center" }}>
+                </>
+              }
+              metaSecondary={
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem", justifyContent: "flex-start", alignItems: "center" }}>
                   {(torrent.appid || hasRating) && (
-                    <span 
-                      className="badge badge-dir" 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.name);
-                        handleOpenUrl(steamUrl);
-                      }}
-                      title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
-                      style={{ 
-                        fontSize: "0.65rem", 
-                        padding: "0.15rem 0.4rem", 
-                        background: "rgba(0, 242, 254, 0.15)", 
-                        border: "1px solid rgba(0, 242, 254, 0.35)", 
-                        color: "#00f2fe",
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "3px"
-                      }}
-                    >
-                      <Gamepad2 size={10} /> Steam ↗
-                    </span>
+                    <SteamStoreBadge
+                      appid={torrent.appid}
+                      baseName={torrent.base_name}
+                      title={torrent.name}
+                    />
                   )}
                   {torrent.size && (
                     <span 
@@ -569,8 +440,8 @@ export default function Torrents1337Panel({
                     </span>
                   )}
                 </div>
-              </div>
-            </div>
+              }
+            />
           );
         })}
       </div>
@@ -587,7 +458,7 @@ export default function Torrents1337Panel({
         currentPage={currentPage}
         totalPages={totalPages}
         totalItems={totalItems}
-        pageSize={pageSize}
+        pageSize={effectivePageSize}
         onPageChange={setCurrentPage}
       />
     </div>

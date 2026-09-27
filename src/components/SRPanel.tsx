@@ -1,75 +1,18 @@
 import { useState, useEffect } from "react";
-import { Terminal, RefreshCw, Flame, ExternalLink, Gamepad2 } from "lucide-react";
+import { Terminal, RefreshCw, Flame } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 import { useScrape } from "../hooks/useScrape";
+import { useDynamicGrid } from "../hooks/useDynamicGrid";
 import type { TorrentSR } from "../types";
-import { getRatingColorClass, getReviewScoreText, getSteamStoreUrl, getCoverUrl } from "../utils/helpers";
 import Pagination from "./shared/Pagination";
 import SearchBox from "./shared/SearchBox";
 import FilterSelect from "./shared/FilterSelect";
 import SortSelect from "./shared/SortSelect";
+import CommonPosterCard, { SteamStoreBadge } from "./shared/CommonPosterCard";
 
 interface SRPanelProps {
   showToast: (msg: string) => void;
-}
-
-function SRCoverImage({ src, title }: { src: string; title: string }) {
-  const [isLandscape, setIsLandscape] = useState(() => {
-    return src.includes("header") || src.includes("capsule");
-  });
-  const [imgError, setImgError] = useState(false);
-
-  useEffect(() => {
-    setIsLandscape(src.includes("header") || src.includes("capsule"));
-    setImgError(false);
-  }, [src]);
-
-  if (imgError) {
-    return (
-      <div className="poster-fallback" style={{ background: "linear-gradient(135deg, #1e293b, #0f172a)" }}>
-        <div className="poster-fallback-icon"><Terminal /></div>
-        <div className="poster-fallback-title" title={title}>{title}</div>
-      </div>
-    );
-  }
-
-  if (isLandscape) {
-    return (
-      <div className="poster-landscape-wrapper">
-        <img className="poster-landscape-bg" src={src} alt="" aria-hidden="true" />
-        <div className="poster-landscape-inner">
-          <img 
-            className="poster-landscape-banner" 
-            src={src} 
-            alt={title} 
-            referrerPolicy="no-referrer"
-            loading="lazy"
-            onError={() => setImgError(true)}
-          />
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <img 
-      className="poster-img"
-      src={src} 
-      alt={title}
-      referrerPolicy="no-referrer"
-      loading="lazy"
-      onLoad={(e) => {
-        const img = e.currentTarget;
-        if (img.naturalWidth && img.naturalHeight) {
-          if (img.naturalWidth / img.naturalHeight > 0.85) {
-            setIsLandscape(true);
-          }
-        }
-      }}
-      onError={() => setImgError(true)}
-    />
-  );
 }
 
 export default function SRPanel({ showToast }: SRPanelProps) {
@@ -79,7 +22,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
   const [sortVal, setSortVal] = useState("");
   const [ratingFilter, setRatingFilter] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
-  const pageSize = 30;
+  const { containerRef, gridRef, effectivePageSize } = useDynamicGrid({ targetPageSize: 30 });
   
   const ratingFilterOptions = [
     { value: "positive", label: t("srFilterPositive") || "Steam好评 (≥70%)" },
@@ -205,24 +148,22 @@ export default function SRPanel({ showToast }: SRPanelProps) {
     }
   });
 
-  // Scroll to top when page changes
-  useEffect(() => {
-    const scrollContainer = document.querySelector(".tab-content-scrollable");
-    if (scrollContainer) {
-      scrollContainer.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  }, [currentPage]);
-
   useEffect(() => {
     setCurrentPage(1);
   }, [searchVal, sortVal, ratingFilter]);
 
   const totalItems = filteredTorrents.length;
-  const totalPages = Math.ceil(totalItems / pageSize) || 1;
+  const totalPages = Math.ceil(totalItems / effectivePageSize) || 1;
   const paginatedTorrents = filteredTorrents.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize
+    (currentPage - 1) * effectivePageSize,
+    currentPage * effectivePageSize
   );
+
+  useEffect(() => {
+    if (currentPage > totalPages && totalPages > 0) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
   const handleOpenUrl = (url: string) => {
     invoke("open_url_command", { url })
@@ -238,7 +179,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
   };
 
   return (
-    <div className="panel" style={{ display: "block" }}>
+    <div className="panel" ref={containerRef} style={{ display: "block" }}>
       {/* Syncing Progress Banner */}
       {isScraping && (
         <div style={{
@@ -342,68 +283,31 @@ export default function SRPanel({ showToast }: SRPanelProps) {
         />
       </section>
 
-      <div className="posters-grid">
+      <div className="posters-grid" ref={gridRef}>
         {paginatedTorrents.map((torrent) => {
           const hasRating = torrent.review_score_desc !== undefined && torrent.review_score_desc !== null && torrent.review_score_desc !== "" && Number(torrent.review_score_desc) > 0;
-          const ratingText = hasRating ? getReviewScoreText(t, torrent.review_score_desc) : "";
-          const hasPercent = torrent.positive_percent !== undefined && torrent.positive_percent !== null && Number(torrent.positive_percent) > 0;
-
-          const hasRecentRating = torrent.recent_review_score_desc !== undefined && torrent.recent_review_score_desc !== null && torrent.recent_review_score_desc !== "" && Number(torrent.recent_review_score_desc) > 0;
-          const recentRatingText = hasRecentRating ? getReviewScoreText(t, torrent.recent_review_score_desc) : "";
-          const hasRecentPercent = torrent.recent_positive_percent !== undefined && torrent.recent_positive_percent !== null && Number(torrent.recent_positive_percent) > 0;
-          const showRecent = hasRecentRating && hasRating && Number(torrent.recent_review_score_desc) !== Number(torrent.review_score_desc);
 
           return (
-            <div 
-              key={torrent.id} 
-              className="poster-card"
+            <CommonPosterCard
+              key={torrent.id}
+              title={torrent.title}
+              coverUrl={torrent.image_url}
+              fallbackIcon={<Terminal />}
+              fallbackGradient="linear-gradient(135deg, #1e293b, #0f172a)"
+              appid={torrent.appid}
+              baseName={torrent.base_name}
+              reviewScoreDesc={torrent.review_score_desc}
+              positivePercent={torrent.positive_percent}
+              recentReviewScoreDesc={torrent.recent_review_score_desc}
+              recentPositivePercent={torrent.recent_positive_percent}
               onClick={() => handleOpenUrl(torrent.url)}
               onContextMenu={(e) => {
                 e.preventDefault();
                 handleCopyUrl(torrent.url);
               }}
-              title={`${torrent.title}\n${torrent.date}\n${torrent.category}${hasRating ? `\nSteam评价: ${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}${showRecent ? `\n近期评价: ${recentRatingText}${hasRecentPercent ? ` (${torrent.recent_positive_percent}%)` : ""}` : ""}` : "\nSteam评价: 暂无评价"}\n\n(左键打开发布页 / 点击 Steam 评价打开 Steam / 右键复制链接)`}
-            >
-              {hasRating && (
-                <div 
-                  className={`rating-overlay ${getRatingColorClass(torrent.review_score_desc)}`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.title);
-                    handleOpenUrl(steamUrl);
-                  }}
-                  title={`${ratingText}${hasPercent ? ` (${torrent.positive_percent}%)` : ""}${showRecent ? `\n近期: ${recentRatingText}${hasRecentPercent ? ` (${torrent.recent_positive_percent}%)` : ""}` : ""}\n${t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}`}
-                >
-                  {hasPercent && <span>👍 {torrent.positive_percent}%</span>}
-                  <span className="rating-desc">{ratingText}</span>
-                  {showRecent && (
-                    <span className="rating-recent" style={{ fontSize: "0.6rem", opacity: 0.85, display: "block", lineHeight: 1.2 }}>
-                      近期: <span className={getRatingColorClass(torrent.recent_review_score_desc)} style={{ color: "inherit" }}>{recentRatingText}</span>
-                      {hasRecentPercent && ` ${torrent.recent_positive_percent}%`}
-                    </span>
-                  )}
-                  <ExternalLink size={10} style={{ opacity: 0.8, marginLeft: 2 }} />
-                </div>
-              )}
-
-              {torrent.image_url ? (
-                <SRCoverImage 
-                  src={getCoverUrl(torrent.image_url) || torrent.image_url} 
-                  title={torrent.title} 
-                />
-              ) : (
-                <div className="poster-fallback" style={{ background: "linear-gradient(135deg, #1e293b, #0f172a)" }}>
-                  <div className="poster-fallback-icon"><Terminal /></div>
-                  <div className="poster-fallback-title" title={torrent.title}>{torrent.title}</div>
-                </div>
-              )}
-              
-              <div className="poster-info">
-                <div className="poster-title" title={torrent.title}>
-                  {torrent.title}
-                </div>
-                
-                <div className="poster-meta" style={{ marginBottom: "0.25rem", color: "rgba(255,255,255,0.7)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              tooltip={`${torrent.title}\n${torrent.date}\n${torrent.category}\n\n(左键打开发布页 / 点击 Steam 评价打开 Steam / 右键复制链接)`}
+              metaPrimary={
+                <>
                   <span>{torrent.date}</span>
                   {torrent.comments > 0 && (
                     <span style={{ display: "flex", alignItems: "center", gap: "0.2rem", color: "#ef4444" }}>
@@ -411,32 +315,16 @@ export default function SRPanel({ showToast }: SRPanelProps) {
                       {torrent.comments}
                     </span>
                   )}
-                </div>
-                
-                <div className="poster-meta" style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem", justifyContent: "flex-start", alignItems: "center" }}>
+                </>
+              }
+              metaSecondary={
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem", justifyContent: "flex-start", alignItems: "center" }}>
                   {(torrent.appid || hasRating) && (
-                    <span 
-                      className="badge badge-dir" 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const steamUrl = getSteamStoreUrl(torrent.appid, torrent.base_name, torrent.title);
-                        handleOpenUrl(steamUrl);
-                      }}
-                      title={t("tipOpenSteam") || "点击在浏览器中打开 Steam 商店页面"}
-                      style={{ 
-                        fontSize: "0.65rem", 
-                        padding: "0.15rem 0.4rem", 
-                        background: "rgba(0, 242, 254, 0.15)", 
-                        border: "1px solid rgba(0, 242, 254, 0.35)", 
-                        color: "#00f2fe",
-                        cursor: "pointer",
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "3px"
-                      }}
-                    >
-                      <Gamepad2 size={10} /> Steam ↗
-                    </span>
+                    <SteamStoreBadge
+                      appid={torrent.appid}
+                      baseName={torrent.base_name}
+                      title={torrent.title}
+                    />
                   )}
                   {torrent.category.split(",")
                     .map(c => c.trim())
@@ -446,18 +334,18 @@ export default function SRPanel({ showToast }: SRPanelProps) {
                     })
                     .slice(0, 2)
                     .map((c, i) => {
-                    let badgeClass = "badge";
-                    if (c.toUpperCase().includes("GAME")) badgeClass += " badge-dir";
-                    else if (c.toUpperCase().includes("UPDATE")) badgeClass += " badge-ver";
-                    return (
-                      <span key={i} className={badgeClass} style={{ fontSize: "0.65rem", padding: "0.15rem 0.35rem", background: "rgba(255,255,255,0.2)", border: "none", color: "#fff" }}>
-                        {c}
-                      </span>
-                    );
-                  })}
+                      let badgeClass = "badge";
+                      if (c.toUpperCase().includes("GAME")) badgeClass += " badge-dir";
+                      else if (c.toUpperCase().includes("UPDATE")) badgeClass += " badge-ver";
+                      return (
+                        <span key={i} className={badgeClass} style={{ fontSize: "0.65rem", padding: "0.15rem 0.35rem", background: "rgba(255,255,255,0.2)", border: "none", color: "#fff" }}>
+                          {c}
+                        </span>
+                      );
+                    })}
                 </div>
-              </div>
-            </div>
+              }
+            />
           );
         })}
       </div>
@@ -474,7 +362,7 @@ export default function SRPanel({ showToast }: SRPanelProps) {
         currentPage={currentPage}
         totalPages={totalPages}
         totalItems={totalItems}
-        pageSize={pageSize}
+        pageSize={effectivePageSize}
         onPageChange={setCurrentPage}
       />
     </div>

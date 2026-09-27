@@ -15,7 +15,7 @@ export default function SettingsPage() {
   const { activeTab, setActiveTab } = useSettingsStore();
 
   const { 
-    scanPaths, loadScanPaths, addScanPath, removeScanPath, 
+    installedPaths, archivedPaths, loadScanPaths, addScanPath, removeScanPath, 
     steamApiThreads, saveSteamApiThreads, 
     language, saveLanguage 
   } = useSettings();
@@ -54,8 +54,10 @@ export default function SettingsPage() {
       <div className="tab-content-scrollable">
         <SettingsPanel
           activeTab={activeTab}
-          scanPaths={scanPaths}
-          addScanPath={() => addScanPath(showToast)}
+          installedPaths={installedPaths}
+          archivedPaths={archivedPaths}
+          addInstalledPath={() => addScanPath("installed", showToast)}
+          addArchivedPath={() => addScanPath("archived", showToast)}
           removeScanPath={(path) => removeScanPath(path, showToast)}
           startScan={startScan}
           cancelScan={cancelScan}

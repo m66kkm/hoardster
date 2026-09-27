@@ -1,7 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { ExternalLink, Gamepad2 } from "lucide-react";
 import type { Game } from "../types";
-import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass, getSteamStoreUrl, openExternalUrl } from "../utils/helpers";
+import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass, getTypeLabel, getSteamStoreUrl, openExternalUrl } from "../utils/helpers";
 import Pagination from "./shared/Pagination";
 
 interface FullIndexPanelProps {
@@ -116,7 +116,7 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                     {game.genres ? <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{game.genres}</span> : <span style={{ color: "var(--text-secondary)", opacity: 0.3 }}>-</span>}
                   </td>
                   <td>
-                    <span className={`badge ${getTypeBadgeClass(game.type)}`}>{game.type}</span>
+                    <span className={`badge ${getTypeBadgeClass(game.type)}`}>{getTypeLabel(game.type, t)}</span>
                   </td>
                   <td>
                     {game.is_exact_dup && <span className="badge badge-dup" style={{ marginRight: "0.35rem" }}>{t("tagExactDup")}</span>}

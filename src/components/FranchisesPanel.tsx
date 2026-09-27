@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { ChevronDown, ExternalLink, Gamepad2 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { FranchiseGroup } from "../types";
-import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass, getSteamStoreUrl, openExternalUrl } from "../utils/helpers";
+import { getRatingColorClass, getCoverUrl, getReviewScoreText, getTypeBadgeClass, getTypeLabel, getSteamStoreUrl, openExternalUrl } from "../utils/helpers";
 
 interface FranchisesPanelProps {
   franchises: FranchiseGroup[];
@@ -92,7 +92,7 @@ export default function FranchisesPanel({ franchises, openAccordions, toggleAcco
                             )}
                           </td>
                           <td>
-                            <span className={`badge ${getTypeBadgeClass(g.type)}`}>{g.type}</span>
+                            <span className={`badge ${getTypeBadgeClass(g.type)}`}>{getTypeLabel(g.type, t)}</span>
                           </td>
                           <td>
                             <span className="code-path" onClick={() => copyPath(g.full_path, g.original_name)} title={t("copyPathMsg")}>{g.full_path}</span>

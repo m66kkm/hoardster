@@ -7,6 +7,7 @@ import {
   getGradientsForName, 
   getReviewScoreText, 
   getTypeBadgeClass,
+  getTypeLabel,
   getSteamStoreUrl,
   openExternalUrl
 } from "../utils/helpers";
@@ -45,7 +46,7 @@ export default function GameDetailRow({ game, onCopyPath, onOpenFolder, onContex
           <div className="detail-game-title" title={game.name || game.original_name}>{game.name || game.original_name}</div>
         </div>
         <div className="detail-path-line">
-          <span className={`badge ${getTypeBadgeClass(game.type)}`}>{game.type}</span>
+          <span className={`badge ${getTypeBadgeClass(game.type)}`}>{getTypeLabel(game.type, t)}</span>
           <span className="code-path" onClick={(e) => { e.stopPropagation(); onCopyPath(game.full_path, game.original_name); }} title={t("copyPathMsg")}>{game.full_path}</span>
         </div>
         <div className="detail-info-line">
