@@ -83,7 +83,7 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                   <td style={{ fontFamily: "'Outfit', sans-serif", fontWeight: 500 }}>{globalIdx}</td>
                   <td style={{ fontWeight: 600, color: "var(--text-primary)", display: "flex", alignItems: "center", gap: "0.75rem" }}>
                     {game.local_cover ? (
-                      <img src={getCoverUrl(game.local_cover) || ""} style={{ width: "32px", height: "48px", objectFit: "cover", borderRadius: "4px", border: "1px solid var(--panel-border)" }} alt="" />
+                      <img src={getCoverUrl(game.local_cover) || ""} style={{ width: "32px", height: "48px", objectFit: "cover", borderRadius: "4px", border: "1px solid var(--panel-border)" }} alt="" referrerPolicy="no-referrer" />
                     ) : (
                       <span style={{ display: "inline-block", width: "32px", height: "48px", background: "rgba(255,255,255,0.05)", borderRadius: "4px", textAlign: "center", lineHeight: "48px", fontSize: "1.2rem" }}>🎮</span>
                     )}

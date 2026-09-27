@@ -17,7 +17,7 @@ export function useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal }: U
   const [franchises, setFranchises] = useState<FranchiseGroup[]>([]);
 
   // Load games list
-  const loadGames = useCallback(async (onlyRepresentatives: boolean, onlyInstalled: boolean) => {
+  const loadGames = useCallback(async (onlyRepresentatives: boolean, onlyInstalled: boolean, onlyArchived?: boolean) => {
     try {
       const list = await invoke<Game[]>("get_games_list_command", {
         search: searchVal,
@@ -26,7 +26,8 @@ export function useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal }: U
         rating: ratingVal,
         sort: sortVal,
         onlyRepresentatives,
-        onlyInstalled
+        onlyInstalled,
+        onlyArchived: !!onlyArchived
       });
       setGamesList(list);
     } catch (e) {

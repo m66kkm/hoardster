@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 
 import TabNav, { type TabDef } from "../components/TabNav";
-import FullIndexPanel from "../components/FullIndexPanel";
 import PosterWall from "../components/PosterWall";
 import DuplicatesPanel from "../components/DuplicatesPanel";
 import FranchisesPanel from "../components/FranchisesPanel";
@@ -18,6 +17,7 @@ import { useAppStore } from "../stores/useAppStore";
 import { useGames } from "../hooks/useGames";
 import { useScan } from "../hooks/useScan";
 import { useSettings } from "../hooks/useSettings";
+import type { Game } from "../types";
 
 export default function LocalGamesPage() {
   const { t } = useTranslation();
@@ -49,18 +49,18 @@ export default function LocalGamesPage() {
   } = useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal });
 
   const reloadData = () => {
-    if (activeTab === "all") loadGames(false, false);
-    else if (activeTab === "installed") loadGames(true, true);
+    if (activeTab === "all") loadGames(false, false, true);
+    else if (activeTab === "installed") loadGames(true, true, false);
     else if (activeTab === "duplicates") loadDuplicates();
     else if (activeTab === "franchise") loadFranchises();
   };
 
   const { isScanning, startScan } = useScan({ onComplete: reloadData });
 
-  // Reset page when filters change
+  // Reset page when filters or tab change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchVal, driveVal, typeVal, ratingVal, sortVal, setCurrentPage]);
+  }, [searchVal, driveVal, typeVal, ratingVal, sortVal, activeTab, setCurrentPage]);
 
   // Load data when tab or filters change
   useEffect(() => {
@@ -84,8 +84,8 @@ export default function LocalGamesPage() {
   }, [currentPage, activeTab]);
 
   const tabs: TabDef[] = [
-    { id: "all", icon: Database, labelKey: "tabAll" },
     { id: "installed", icon: HardDrive, labelKey: "tabInstalled" },
+    { id: "all", icon: Database, labelKey: "tabAll" },
     { id: "franchise", icon: Layers, labelKey: "tabFranchise" },
     { id: "duplicates", icon: Layers, labelKey: "tabDuplicates" }
   ];
@@ -125,6 +125,19 @@ export default function LocalGamesPage() {
     } catch (e) {
       console.error(e);
       showToast(t("toastOpenFolderFailed"));
+    }
+  };
+
+  const handleDeleteGame = async (game: Game) => {
+    const gameName = game.name || game.original_name;
+    showToast(t("toastDeletingGame", { name: gameName }));
+    try {
+      await invoke("delete_game_directory_command", { path: game.full_path });
+      showToast(t("toastDeleteSuccess", { name: gameName }));
+      reloadData();
+    } catch (e: any) {
+      console.error(e);
+      showToast(`${t("toastDeleteFailed")}: ${e?.toString() || e}`);
     }
   };
 
@@ -180,33 +193,25 @@ export default function LocalGamesPage() {
           options={sortOptions} 
           defaultLabel={t("filterSortDefault")} 
         />
-        {activeTab === "installed" && (
+        {(activeTab === "installed" || activeTab === "all") && (
           <ViewToggle value={viewMode} onChange={setViewMode} />
         )}
       </section>
 
       <div className="tab-content-scrollable">
-        {activeTab === "all" && (
-          <FullIndexPanel 
-            games={gamesList} 
-            currentPage={currentPage} 
-            setCurrentPage={setCurrentPage} 
-            pageSize={36} 
-            openGameFolder={openGameFolder} 
-          />
-        )}
-        
-        {activeTab === "installed" && (
+        {(activeTab === "installed" || activeTab === "all") && (
           <PosterWall 
             games={gamesList} 
             viewMode={viewMode} 
             currentPage={currentPage} 
             setCurrentPage={setCurrentPage} 
             pageSize={36} 
-            title={t("wallTitleInstalled")} 
+            title={activeTab === "installed" ? t("wallTitleInstalled") : t("wallTitleArchived")} 
             subtitle={t("wallSubtitle")} 
             copyPath={copyPath} 
             openGameFolder={openGameFolder} 
+            onDeleteGame={handleDeleteGame}
+            onRefresh={reloadData}
           />
         )}
         

@@ -14,6 +14,64 @@ interface SRPanelProps {
   showToast: (msg: string) => void;
 }
 
+function SRCoverImage({ src, title }: { src: string; title: string }) {
+  const [isLandscape, setIsLandscape] = useState(() => {
+    return src.includes("header") || src.includes("capsule");
+  });
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    setIsLandscape(src.includes("header") || src.includes("capsule"));
+    setImgError(false);
+  }, [src]);
+
+  if (imgError) {
+    return (
+      <div className="poster-fallback" style={{ background: "linear-gradient(135deg, #1e293b, #0f172a)" }}>
+        <div className="poster-fallback-icon"><Terminal /></div>
+        <div className="poster-fallback-title" title={title}>{title}</div>
+      </div>
+    );
+  }
+
+  if (isLandscape) {
+    return (
+      <div className="poster-landscape-wrapper">
+        <img className="poster-landscape-bg" src={src} alt="" aria-hidden="true" />
+        <div className="poster-landscape-inner">
+          <img 
+            className="poster-landscape-banner" 
+            src={src} 
+            alt={title} 
+            referrerPolicy="no-referrer"
+            loading="lazy"
+            onError={() => setImgError(true)}
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <img 
+      className="poster-img"
+      src={src} 
+      alt={title}
+      referrerPolicy="no-referrer"
+      loading="lazy"
+      onLoad={(e) => {
+        const img = e.currentTarget;
+        if (img.naturalWidth && img.naturalHeight) {
+          if (img.naturalWidth / img.naturalHeight > 0.85) {
+            setIsLandscape(true);
+          }
+        }
+      }}
+      onError={() => setImgError(true)}
+    />
+  );
+}
+
 export default function SRPanel({ showToast }: SRPanelProps) {
   const { t } = useTranslation();
   const [torrents, setTorrents] = useState<TorrentSR[]>([]);
@@ -329,11 +387,9 @@ export default function SRPanel({ showToast }: SRPanelProps) {
               )}
 
               {torrent.image_url ? (
-                <img 
-                  className="poster-img"
+                <SRCoverImage 
                   src={getCoverUrl(torrent.image_url) || torrent.image_url} 
-                  alt={torrent.title}
-                  referrerPolicy="no-referrer"
+                  title={torrent.title} 
                 />
               ) : (
                 <div className="poster-fallback" style={{ background: "linear-gradient(135deg, #1e293b, #0f172a)" }}>

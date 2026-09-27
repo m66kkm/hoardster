@@ -48,15 +48,22 @@ export const getSteamStoreUrl = (appid?: number, baseName?: string, fallbackTitl
 
 // Cover image resolver
 export const getCoverUrl = (localCover?: string): string | null => {
-  if (localCover) {
-    if (localCover.startsWith("http://") || localCover.startsWith("https://")) {
-      return localCover;
-    }
-    // Use the custom cover protocol URL format for Tauri v2 on Windows
-    const filename = localCover.replace("covers/", "");
-    return `http://cover.localhost/${filename}`;
+  if (!localCover) return null;
+  const trimmed = localCover.trim();
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
   }
-  return null;
+  // Strip various prefixes like cover://, covers/, covers\
+  let filename = trimmed;
+  if (filename.startsWith("cover://")) {
+    filename = filename.slice("cover://".length);
+  } else if (filename.startsWith("covers/")) {
+    filename = filename.slice("covers/".length);
+  } else if (filename.startsWith("covers\\")) {
+    filename = filename.slice("covers\\".length);
+  }
+  filename = filename.replace(/^[/\\]+/, "");
+  return `http://cover.localhost/${filename}`;
 };
 
 export const getTypeBadgeClass = (type?: string): string => {

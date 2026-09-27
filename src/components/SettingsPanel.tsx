@@ -75,6 +75,29 @@ export default function SettingsPanel({
 
   const [isClearing, setIsClearing] = useState(false);
   const [isClearingSR, setIsClearingSR] = useState(false);
+  const [isRecalculating, setIsRecalculating] = useState(false);
+  const [recalcResult, setRecalcResult] = useState<string | null>(null);
+
+  const handleRecalculateDb = async () => {
+    try {
+      setIsRecalculating(true);
+      setRecalcResult(null);
+      const result = await invoke<string>("recalculate_games_command");
+      setRecalcResult(result);
+      if ((window as any).__TAURI_PLUGIN_DIALOG__) {
+        const { message } = await import("@tauri-apps/plugin-dialog");
+        message(result, { title: t("recalculateDbSuccess"), kind: "info" });
+      }
+    } catch (e) {
+      console.error("recalculate_games_command error:", e);
+      if ((window as any).__TAURI_PLUGIN_DIALOG__) {
+        const { message } = await import("@tauri-apps/plugin-dialog");
+        message(`Error: ${e}`, { title: "Error", kind: "error" });
+      }
+    } finally {
+      setIsRecalculating(false);
+    }
+  };
 
   const handleClear1337xData = async () => {
     const confirmed = await ask(t("confirmClearDataDesc") || "Are you sure you want to clear the 1337x database?", {
@@ -319,6 +342,30 @@ export default function SettingsPanel({
               />
               <span style={{ marginLeft: "1rem", color: "var(--text-secondary)" }}>{t("threads")}</span>
             </div>
+          </div>
+
+          <div className="settings-section">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+              <h3 style={{ margin: 0 }}>{t("recalculateDbTitle")}</h3>
+              <button 
+                className="action-btn" 
+                onClick={handleRecalculateDb}
+                disabled={isRecalculating}
+                style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}
+              >
+                <Sparkles size={14} className={isRecalculating ? "animate-spin" : ""} style={{ marginRight: "0.4rem" }} />
+                {isRecalculating ? t("recalculateDbRunning") : t("recalculateDbBtn")}
+              </button>
+            </div>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "0.5rem" }}>
+              {t("recalculateDbDesc")}
+            </p>
+            {recalcResult && (
+              <div style={{ marginTop: "0.5rem", fontSize: "0.85rem", color: "#10b981", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <CheckCircle size={15} />
+                <span>{recalcResult}</span>
+              </div>
+            )}
           </div>
         </>
       )}

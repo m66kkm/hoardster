@@ -21,7 +21,7 @@ interface LocalGamesState {
 }
 
 export const useLocalGamesStore = create<LocalGamesState>((set) => ({
-  activeTab: "all",
+  activeTab: "installed",
   setActiveTab: (tab) => set({ activeTab: tab }),
   searchVal: "",
   setSearchVal: (val) => set({ searchVal: val }),

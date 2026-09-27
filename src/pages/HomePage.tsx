@@ -125,6 +125,7 @@ export default function HomePage() {
             subtitle={t("wallSubtitle")} 
             copyPath={copyPath} 
             openGameFolder={openGameFolder} 
+            onRefresh={() => loadGames(true, false)}
           />
         )}
       </div>

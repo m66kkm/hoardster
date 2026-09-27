@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import type { Game } from "../types";
 import { 
   getRatingColorClass, 
@@ -14,11 +15,22 @@ import { ExternalLink, Gamepad2 } from "lucide-react";
 interface GameCardProps {
   game: Game;
   onOpenFolder: (path: string) => void;
+  onContextMenu?: (e: React.MouseEvent, game: Game) => void;
 }
 
-export default function GameCard({ game, onOpenFolder }: GameCardProps) {
+export default function GameCard({ game, onOpenFolder, onContextMenu }: GameCardProps) {
   const { t } = useTranslation();
   const cover = getCoverUrl(game.local_cover);
+  const [imgError, setImgError] = useState(false);
+  const [isLandscape, setIsLandscape] = useState(() => {
+    if (!cover) return false;
+    return cover.includes("header") || cover.includes("capsule");
+  });
+
+  useEffect(() => {
+    setImgError(false);
+    setIsLandscape(Boolean(cover && (cover.includes("header") || cover.includes("capsule"))));
+  }, [cover]);
 
   const hasRating = game.review_score_desc !== undefined && game.review_score_desc !== null && game.review_score_desc !== "" && Number(game.review_score_desc) > 0;
   const ratingText = hasRating ? getReviewScoreText(t, game.review_score_desc) : "";
@@ -41,7 +53,12 @@ export default function GameCard({ game, onOpenFolder }: GameCardProps) {
     <div 
       className="poster-card" 
       onClick={() => onOpenFolder(game.full_path)}
-      title={`${game.original_name}\nSteam类型: ${game.genres || "未知"}\n文件类别: ${game.type}\n路径: ${game.full_path}\n大小: ${game.size}${hasRating ? `\nSteam评价: ${ratingText}${hasPercent ? ` (${game.positive_percent}%)` : ""}` : ""}\n\n(左键打开文件夹 / 点击 Steam 评价打开 Steam)`}
+      onContextMenu={(e) => {
+        if (onContextMenu) {
+          onContextMenu(e, game);
+        }
+      }}
+      title={`${game.original_name}\nSteam类型: ${game.genres || "未知"}\n文件类别: ${game.type}\n路径: ${game.full_path}\n大小: ${game.size}${hasRating ? `\nSteam评价: ${ratingText}${hasPercent ? ` (${game.positive_percent}%)` : ""}` : ""}\n\n(左键打开文件夹 / 右键操作菜单 / 点击 Steam 评价打开 Steam)`}
     >
       {hasRating && (
         <div 
@@ -61,8 +78,44 @@ export default function GameCard({ game, onOpenFolder }: GameCardProps) {
         </div>
       )}
       
-      {cover ? (
-        <img className="poster-img" src={cover} alt={game.original_name} loading="lazy" />
+      {cover && !imgError ? (
+        isLandscape ? (
+          <div className="poster-landscape-wrapper">
+            <img 
+              className="poster-landscape-bg" 
+              src={cover} 
+              alt="" 
+              aria-hidden="true" 
+            />
+            <div className="poster-landscape-inner">
+              <img 
+                className="poster-landscape-banner" 
+                src={cover} 
+                alt={game.name || game.original_name} 
+                loading="lazy" 
+                referrerPolicy="no-referrer"
+                onError={() => setImgError(true)}
+              />
+            </div>
+          </div>
+        ) : (
+          <img 
+            className="poster-img" 
+            src={cover} 
+            alt={game.name || game.original_name} 
+            loading="lazy" 
+            referrerPolicy="no-referrer"
+            onLoad={(e) => {
+              const img = e.currentTarget;
+              if (img.naturalWidth && img.naturalHeight) {
+                if (img.naturalWidth / img.naturalHeight > 0.85) {
+                  setIsLandscape(true);
+                }
+              }
+            }}
+            onError={() => setImgError(true)}
+          />
+        )
       ) : (
         <div className="poster-fallback" style={{ background: getGradientsForName(game.original_name) }}>
           <div className="poster-fallback-icon">🎮</div>
@@ -98,7 +151,7 @@ export default function GameCard({ game, onOpenFolder }: GameCardProps) {
         </div>
       )}
       
-      {cover && (
+      {cover && !imgError && (
         <div className="poster-info">
           <div className="poster-title" title={game.name || game.original_name}>{game.name || game.original_name}</div>
           <div className="poster-meta" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>

@@ -67,7 +67,7 @@ export default function FranchisesPanel({ franchises, openAccordions, toggleAcco
                             title={t("openInExplorer")}
                           >
                             {g.local_cover ? (
-                              <img src={getCoverUrl(g.local_cover) || ""} style={{ width: "32px", height: "48px", objectFit: "cover", borderRadius: "4px", border: "1px solid var(--panel-border)" }} alt="" />
+                              <img src={getCoverUrl(g.local_cover) || ""} style={{ width: "32px", height: "48px", objectFit: "cover", borderRadius: "4px", border: "1px solid var(--panel-border)" }} alt="" referrerPolicy="no-referrer" />
                             ) : (
                               <span style={{ display: "inline-block", width: "32px", height: "48px", background: "rgba(255,255,255,0.05)", borderRadius: "4px", textAlign: "center", lineHeight: "48px", fontSize: "1.2rem" }}>🎮</span>
                             )}

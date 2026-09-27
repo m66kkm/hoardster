@@ -34,8 +34,10 @@ export default function App() {
   const handleContainerMouseDown = async (e: React.MouseEvent) => {
     if (e.button === 0) {
       const target = e.target as HTMLElement;
-      // 只要不是交互元素（按钮、链接、输入框、选择器、列表项内部点击等），支持在顶层空白处拖动
+      // 只要不是交互元素或 header，支持在顶层空白处拖动
       if (
+        target.closest("header") || 
+        target.closest(".header-right-controls") || 
         target.closest("button") || 
         target.closest("a") || 
         target.closest("input") || 
@@ -46,10 +48,19 @@ export default function App() {
       ) {
         return;
       }
-      try {
-        await appWindow.startDragging();
-      } catch (err) {
-        console.error("Failed to drag from container:", err);
+      
+      if (e.detail % 2 === 0) {
+        try {
+          await appWindow.toggleMaximize();
+        } catch (err) {
+          console.error("Failed to toggle maximize:", err);
+        }
+      } else {
+        try {
+          await appWindow.startDragging();
+        } catch (err) {
+          console.error("Failed to drag from container:", err);
+        }
       }
     }
   };
@@ -57,7 +68,6 @@ export default function App() {
   return (
     <div 
       className="container" 
-      data-tauri-drag-region 
       onMouseDown={handleContainerMouseDown}
     >
       <Header />

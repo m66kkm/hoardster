@@ -15,18 +15,27 @@ interface GameDetailRowProps {
   game: Game;
   onCopyPath: (path: string, gameName: string) => void;
   onOpenFolder: (path: string) => void;
+  onContextMenu?: (e: React.MouseEvent, game: Game) => void;
 }
 
-export default function GameDetailRow({ game, onCopyPath, onOpenFolder }: GameDetailRowProps) {
+export default function GameDetailRow({ game, onCopyPath, onOpenFolder, onContextMenu }: GameDetailRowProps) {
   const { t } = useTranslation();
 
   const cover = getCoverUrl(game.local_cover);
 
   return (
-    <div className="detail-row" onClick={() => onCopyPath(game.full_path, game.original_name)}>
+    <div 
+      className="detail-row" 
+      onClick={() => onCopyPath(game.full_path, game.original_name)}
+      onContextMenu={(e) => {
+        if (onContextMenu) {
+          onContextMenu(e, game);
+        }
+      }}
+    >
       <div className="detail-cover-container">
         {cover ? (
-          <img className="detail-cover-img" src={cover} alt={game.original_name} loading="lazy" />
+          <img className="detail-cover-img" src={cover} alt={game.original_name} loading="lazy" referrerPolicy="no-referrer" />
         ) : (
           <div className="detail-fallback" style={{ background: getGradientsForName(game.original_name) }}>🎮</div>
         )}
