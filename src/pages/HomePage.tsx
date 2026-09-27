@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Monitor, Flame, Sparkles } from "lucide-react";
+import { Monitor, Flame, BarChart2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -21,7 +21,7 @@ export default function HomePage() {
   const { setMenuMode, showToast } = useAppStore();
   const { scanPaths, loadScanPaths } = useSettings();
   
-  const [activeTab, setActiveTab] = useState<"dashboard" | "popular" | "posters">("dashboard");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "popular" | "stats">("dashboard");
   const [stats, setStats] = useState<StatsSummary>({
     total_scan: 0,
     unique_games: 0,
@@ -49,15 +49,19 @@ export default function HomePage() {
   }, [loadScanPaths]);
 
   useEffect(() => {
-    if (activeTab === "posters") {
+    if (activeTab === "dashboard") {
       loadGames(true, false);
+    } else if (activeTab === "stats") {
+      invoke<StatsSummary>("get_games_stats_command")
+        .then(setStats)
+        .catch(console.error);
     }
   }, [activeTab, searchVal, loadGames]);
 
   const tabs: TabDef[] = [
     { id: "dashboard", icon: Monitor, labelKey: "tabDashboard" },
     { id: "popular", icon: Flame, labelKey: "tabPopular" },
-    { id: "posters", icon: Sparkles, labelKey: "tabPosters" }
+    { id: "stats", icon: BarChart2, labelKey: "tabStats" }
   ];
 
   const handleSearchInLocal = (_title: string) => {
@@ -88,10 +92,10 @@ export default function HomePage() {
       <TabNav 
         tabs={tabs} 
         activeTab={activeTab} 
-        onTabChange={(tab) => setActiveTab(tab as "dashboard" | "popular" | "posters")} 
+        onTabChange={(tab) => setActiveTab(tab as "dashboard" | "popular" | "stats")} 
       />
 
-      {activeTab === "posters" && (
+      {activeTab === "dashboard" && (
         <section className="controls-row">
           <SearchBox value={searchVal} onChange={setSearchVal} />
           <ViewToggle value={viewMode} onChange={setViewMode} />
@@ -100,6 +104,25 @@ export default function HomePage() {
 
       <div className="tab-content-scrollable">
         {activeTab === "dashboard" && (
+          <PosterWall 
+            games={gamesList} 
+            viewMode={viewMode} 
+            currentPage={currentPage} 
+            setCurrentPage={setCurrentPage} 
+            pageSize={36} 
+            title={t("wallTitleHome") || "全量游戏海报墙"} 
+            subtitle={t("wallSubtitle")} 
+            copyPath={copyPath} 
+            openGameFolder={openGameFolder} 
+            onRefresh={() => loadGames(true, false)}
+          />
+        )}
+
+        {activeTab === "popular" && (
+          <PopularPanel onSearchInLocal={handleSearchInLocal} />
+        )}
+
+        {activeTab === "stats" && (
           <div style={{ padding: "0 0.5rem" }}>
             <StatsGrid stats={stats} onCardClick={() => {}} />
             <Dashboard 
@@ -108,25 +131,6 @@ export default function HomePage() {
               onRatingClick={() => {}} 
             />
           </div>
-        )}
-
-        {activeTab === "popular" && (
-          <PopularPanel onSearchInLocal={handleSearchInLocal} />
-        )}
-
-        {activeTab === "posters" && (
-          <PosterWall 
-            games={gamesList} 
-            viewMode={viewMode} 
-            currentPage={currentPage} 
-            setCurrentPage={setCurrentPage} 
-            pageSize={36} 
-            title={t("wallTitlePosters")} 
-            subtitle={t("wallSubtitle")} 
-            copyPath={copyPath} 
-            openGameFolder={openGameFolder} 
-            onRefresh={() => loadGames(true, false)}
-          />
         )}
       </div>
     </>
