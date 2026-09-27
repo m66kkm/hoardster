@@ -78,6 +78,7 @@ const resources = {
       "getLatest": "获取最新",
       "settingsBtn": "盘库设置",
       "homeBtn": "系统首页",
+      "gameIndexBtn": "游戏索引",
       "radarBtn": "情报雷达",
       
       "tabDashboard": "系统首页",
@@ -86,7 +87,7 @@ const resources = {
       "tabInstalled": "已安装游戏",
       "tabFranchise": "关联系列/续作",
       "tabDuplicates": "疑似重复",
-      "tabAll": "完整索引",
+      "tabAll": "已经归档游戏",
       "tabNews": "游戏情报",
       "tabEpic": "Epic 喜加一",
       "tabSteam": "Steam 喜加一",
@@ -124,6 +125,12 @@ const resources = {
       "dataCorrectionLastRun": "上次校准时间",
       "dataCorrectionNeverRun": "尚未校准",
       "dataCorrectionStatusCompleted": "校准完成",
+      
+      "recalculateDbTitle": "重新计算游戏数据",
+      "recalculateDbDesc": "根据最新的通用清洗模式、智能去重与防续作漂移规则，全量重新计算本地游戏库的所有名称、分组与代表选择，并自动清理错误匹配的缓存。",
+      "recalculateDbBtn": "重新计算数据",
+      "recalculateDbRunning": "正在计算中...",
+      "recalculateDbSuccess": "重新计算完成！",
       
       "epicTitle": "Epic 喜加一情报",
       "epicDesc": "实时获取 Epic 平台当前免费及即将推出的免费游戏信息。",
@@ -287,6 +294,7 @@ const resources = {
       
       "wallTitlePosters": "独立海报墙 (Poster Wall)",
       "wallTitleInstalled": "已安装游戏库",
+      "wallTitleArchived": "已归档游戏库",
       "wallSubtitle": "点击卡片或详情列表，可直接在资源管理器中打开游戏目录。",
       "wallNoGames": "该视图下暂无游戏",
       
@@ -329,7 +337,25 @@ const resources = {
       "titlebarMinimize": "最小化",
       "titlebarMaximize": "最大化",
       "titlebarRestore": "向下还原",
-      "titlebarClose": "关闭"
+      "titlebarClose": "关闭",
+      "deleteCurrentGame": "删除当前游戏",
+      "toastDeletingGame": "正在删除游戏目录: {{name}}...",
+      "toastDeleteSuccess": "已成功删除游戏及相关目录: {{name}}",
+      "toastDeleteFailed": "删除游戏失败",
+      "toastOpenFolderFailed": "打开目录失败",
+      "manualMapSteam": "手工映射",
+      "manualMapTitle": "手工映射到 Steam 游戏",
+      "manualMapDesc": "输入 Steam AppID 或商店链接，系统将自动抓取该游戏的官方信息和高清竖版封面。",
+      "manualMapCurrentGame": "当前本地游戏",
+      "manualMapCurrentMapping": "当前映射 AppID",
+      "manualMapNotMapped": "未映射",
+      "manualMapInputLabel": "Steam AppID 或 商店链接",
+      "manualMapInputPlaceholder": "例如 239140 或 store.steampowered.com/app/239140/",
+      "manualMapBtnConfirm": "确认映射",
+      "manualMapBtnCancel": "取消",
+      "manualMapFetching": "正在获取 Steam 数据与封面...",
+      "manualMapSuccess": "成功映射到: {{name}}",
+      "manualMapInvalidInput": "请输入有效的 Steam AppID 或商店链接"
     }
   },
   english: {
@@ -359,6 +385,7 @@ const resources = {
       "getLatest": "Get Latest",
       "settingsBtn": "Settings",
       "homeBtn": "Home",
+      "gameIndexBtn": "Game Index",
       "radarBtn": "Intelligence Radar",
 
       "tabDashboard": "Dashboard",
@@ -367,7 +394,7 @@ const resources = {
       "tabInstalled": "Installed Games",
       "tabFranchise": "Franchises / Sequels",
       "tabDuplicates": "Possible Duplicates",
-      "tabAll": "Full Index",
+      "tabAll": "Archived Games",
       "tabNews": "Game Info",
       "tabEpic": "Epic Free Games",
       "tabSteam": "Steam Free Games",
@@ -401,6 +428,12 @@ const resources = {
       "dataCorrectionLastRun": "Last Corrected",
       "dataCorrectionNeverRun": "Never",
       "dataCorrectionStatusCompleted": "Completed",
+      
+      "recalculateDbTitle": "Recalculate Game Data",
+      "recalculateDbDesc": "Recalculate all clean names, duplicate groups, and representatives using the latest generic normalization and anti-sequel drift rules, and purge invalid cache entries.",
+      "recalculateDbBtn": "Recalculate Data",
+      "recalculateDbRunning": "Recalculating...",
+      "recalculateDbSuccess": "Recalculation completed!",
       
       "epicTitle": "Epic Free Games Intel",
       "epicDesc": "Real-time updates on currently free and upcoming free games on the Epic Games Store.",
@@ -564,6 +597,7 @@ const resources = {
       
       "wallTitlePosters": "Poster Wall",
       "wallTitleInstalled": "Installed Games",
+      "wallTitleArchived": "Archived Games",
       "wallSubtitle": "Click a card or detail row to open the game directory in File Explorer.",
       "wallNoGames": "No games available in this view",
       
@@ -606,7 +640,25 @@ const resources = {
       "titlebarMinimize": "Minimize",
       "titlebarMaximize": "Maximize",
       "titlebarRestore": "Restore Down",
-      "titlebarClose": "Close"
+      "titlebarClose": "Close",
+      "deleteCurrentGame": "Delete Current Game",
+      "toastDeletingGame": "Deleting game directory: {{name}}...",
+      "toastDeleteSuccess": "Successfully deleted game and directory: {{name}}",
+      "toastDeleteFailed": "Failed to delete game",
+      "toastOpenFolderFailed": "Failed to open folder",
+      "manualMapSteam": "Manual Mapping",
+      "manualMapTitle": "Manual Map to Steam Game",
+      "manualMapDesc": "Enter a Steam AppID or store page link to fetch official details and poster.",
+      "manualMapCurrentGame": "Current Local Game",
+      "manualMapCurrentMapping": "Currently Mapped AppID",
+      "manualMapNotMapped": "Not Mapped",
+      "manualMapInputLabel": "Steam AppID or Store Link",
+      "manualMapInputPlaceholder": "e.g. 239140 or store.steampowered.com/app/239140/",
+      "manualMapBtnConfirm": "Map Game",
+      "manualMapBtnCancel": "Cancel",
+      "manualMapFetching": "Fetching Steam info & poster...",
+      "manualMapSuccess": "Successfully mapped to: {{name}}",
+      "manualMapInvalidInput": "Please enter a valid Steam AppID or store link"
     }
   }
 };

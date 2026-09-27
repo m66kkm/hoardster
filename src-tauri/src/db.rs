@@ -168,13 +168,15 @@ pub fn init_db(conn: &Connection) -> Result<()> {
             recent_positive_percent INTEGER,
             release_date TEXT,
             last_updated TEXT,
-            genres TEXT
+            genres TEXT,
+            is_manual INTEGER DEFAULT 0
         )",
         [],
     )?;
     // Migration: add recent review columns if they don't exist (for existing databases)
     conn.execute("ALTER TABLE steam_db.steam_cache ADD COLUMN recent_review_score_desc INTEGER", []).ok();
     conn.execute("ALTER TABLE steam_db.steam_cache ADD COLUMN recent_positive_percent INTEGER", []).ok();
+    conn.execute("ALTER TABLE steam_db.steam_cache ADD COLUMN is_manual INTEGER DEFAULT 0", []).ok();
 
     // 迁移旧的字符串评价数据为整数 (Steam review_score_desc values)
     let _ = conn.execute_batch(
@@ -203,6 +205,18 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         )",
         [],
     )?;
+
+    // 自动修正历史版本遗留的误匹配缓存，并执行一次性全量通用清洗与去重重新计算
+    let needs_recalc: bool = conn.query_row(
+        "SELECT value FROM config WHERE key = 'generic_matching_v1'",
+        [],
+        |r| r.get::<_, String>(0)
+    ).ok().as_deref() != Some("1");
+
+    if needs_recalc {
+        let _ = recalculate_existing_games(conn);
+        let _ = conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('generic_matching_v1', '1')", []);
+    }
 
     // 5. 扫描历史表
     conn.execute(
@@ -433,8 +447,9 @@ pub fn remove_scan_path(conn: &Connection, path: &str) -> Result<()> {
 }
 
 pub fn get_steam_cache(conn: &Connection) -> Result<HashMap<String, SteamCacheEntry>> {
-    let mut stmt = conn.prepare("SELECT base_name, appid, name, local_cover, CAST(review_score_desc AS INTEGER), positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres FROM steam_db.steam_cache")?;
+    let mut stmt = conn.prepare("SELECT base_name, appid, name, local_cover, CAST(review_score_desc AS INTEGER), positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres, is_manual FROM steam_db.steam_cache")?;
     let rows = stmt.query_map([], |row| {
+        let is_manual: Option<i32> = row.get(12).ok();
         Ok(SteamCacheEntry {
             base_name: row.get(0)?,
             appid: row.get(1)?,
@@ -448,6 +463,7 @@ pub fn get_steam_cache(conn: &Connection) -> Result<HashMap<String, SteamCacheEn
             release_date: row.get(9)?,
             last_updated: row.get(10)?,
             genres: row.get(11)?,
+            is_manual: is_manual.map(|v| v != 0),
         })
     })?;
 
@@ -474,7 +490,8 @@ pub fn clear_steam_cache(conn: &Connection) -> Result<()> {
             recent_positive_percent INTEGER,
             release_date TEXT,
             last_updated TEXT,
-            genres TEXT
+            genres TEXT,
+            is_manual INTEGER DEFAULT 0
         )",
         [],
     )?;
@@ -500,6 +517,8 @@ pub fn sync_game_metadata_covers(conn: &Connection) -> Result<()> {
              OR local_cover LIKE '%capsule_184x69%'
              OR local_cover LIKE '%header.jpg%'
          )
+         AND appid IS NULL
+         AND (is_manual IS NULL OR is_manual = 0)
          AND EXISTS (
              SELECT 1 FROM skidrow_reloaded sr 
              WHERE sr.base_name = steam_db.steam_cache.base_name 
@@ -523,13 +542,15 @@ pub fn sync_game_metadata_covers(conn: &Connection) -> Result<()> {
 }
 
 pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> Result<()> {
+    let is_man = entry.is_manual.map(|v| if v { 1 } else { 0 });
     conn.execute(
-        "INSERT INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        "INSERT INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres, is_manual)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(base_name) DO UPDATE SET
-            appid = excluded.appid,
-            name = COALESCE(excluded.name, steam_cache.name),
+            appid = CASE WHEN steam_cache.is_manual = 1 THEN steam_cache.appid ELSE excluded.appid END,
+            name = CASE WHEN steam_cache.is_manual = 1 THEN steam_cache.name ELSE COALESCE(excluded.name, steam_cache.name) END,
             local_cover = CASE
+                WHEN steam_cache.is_manual = 1 THEN steam_cache.local_cover
                 -- 若已有竖版封面（如 S/R 补充的封面或已有 covers/ 或 library_600x900），且新封面是横版，则保留已有竖版封面
                 WHEN steam_cache.local_cover IS NOT NULL 
                      AND steam_cache.local_cover != '' 
@@ -545,7 +566,45 @@ pub fn insert_steam_cache_entry(conn: &Connection, entry: &SteamCacheEntry) -> R
             recent_positive_percent = excluded.recent_positive_percent,
             release_date = COALESCE(excluded.release_date, steam_cache.release_date),
             last_updated = excluded.last_updated,
-            genres = COALESCE(excluded.genres, steam_cache.genres)",
+            genres = COALESCE(excluded.genres, steam_cache.genres),
+            is_manual = COALESCE(steam_cache.is_manual, excluded.is_manual, 0)",
+        params![
+            entry.base_name,
+            entry.appid,
+            entry.name,
+            entry.local_cover,
+            entry.review_score_desc,
+            entry.positive_percent,
+            entry.total_reviews,
+            entry.recent_review_score_desc,
+            entry.recent_positive_percent,
+            entry.release_date,
+            entry.last_updated,
+            entry.genres,
+            is_man
+        ],
+    )?;
+    Ok(())
+}
+
+/// 强制更新指定 base_name 的 Steam 缓存（用于手工映射等明确指定 AppID 的场景，无条件覆盖）
+pub fn upsert_steam_cache_entry_forced(conn: &Connection, entry: &SteamCacheEntry) -> Result<()> {
+    conn.execute(
+        "INSERT INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres, is_manual)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 1)
+         ON CONFLICT(base_name) DO UPDATE SET
+            appid = excluded.appid,
+            name = excluded.name,
+            local_cover = excluded.local_cover,
+            review_score_desc = excluded.review_score_desc,
+            positive_percent = excluded.positive_percent,
+            total_reviews = excluded.total_reviews,
+            recent_review_score_desc = excluded.recent_review_score_desc,
+            recent_positive_percent = excluded.recent_positive_percent,
+            release_date = excluded.release_date,
+            last_updated = excluded.last_updated,
+            genres = excluded.genres,
+            is_manual = 1",
         params![
             entry.base_name,
             entry.appid,
@@ -594,6 +653,57 @@ pub fn save_scanned_games(conn: &Connection, games: &[Game]) -> Result<()> {
     Ok(())
 }
 
+pub fn delete_game_by_path(conn: &Connection, full_path: &str) -> Result<()> {
+    let norm_backslash = full_path.replace('/', "\\");
+    let norm_forward = full_path.replace('\\', "/");
+
+    // 检查被删除的游戏是否是代表游戏，以及获取其 base_name
+    let base_name: Option<String> = conn
+        .query_row(
+            "SELECT base_name FROM games WHERE (full_path = ?1 OR full_path = ?2 OR full_path = ?3) AND is_representative = 1",
+            params![full_path, &norm_backslash, &norm_forward],
+            |r| r.get(0),
+        )
+        .ok();
+
+    // 从 games 表删除记录
+    conn.execute(
+        "DELETE FROM games WHERE full_path = ?1 OR full_path = ?2 OR full_path = ?3",
+        params![full_path, &norm_backslash, &norm_forward],
+    )?;
+
+    // 如果被删除的是代表游戏，且同组 base_name 下还有其他游戏版本，更新同组游戏的代表状态
+    if let Some(base) = base_name {
+        let remaining_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM games WHERE base_name = ?",
+                [&base],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+
+        if remaining_count == 1 {
+            let _ = conn.execute(
+                "UPDATE games SET is_representative = 1, is_exact_dup = 0, is_version_dup = 0 WHERE base_name = ?",
+                [&base],
+            );
+        } else if remaining_count > 1 {
+            let next_id: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM games WHERE base_name = ? ORDER BY length(original_name) ASC LIMIT 1",
+                    [&base],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(nid) = next_id {
+                let _ = conn.execute("UPDATE games SET is_representative = 1 WHERE id = ?", [nid]);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn get_games_stats(conn: &Connection) -> Result<StatsSummary> {
     let total_scan: i64 = conn.query_row("SELECT count(*) FROM games", [], |row| row.get(0))?;
     let unique_games: i64 = conn.query_row("SELECT count(*) FROM games WHERE is_representative = 1", [], |row| row.get(0))?;
@@ -630,6 +740,7 @@ pub fn get_games_list(
     sort: &str,
     only_representatives: bool,
     only_installed: bool,
+    only_archived: bool,
 ) -> Result<Vec<Game>> {
     let mut query = String::from(
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
@@ -647,6 +758,8 @@ pub fn get_games_list(
 
     if only_installed {
         query.push_str(" AND g.type = 'Installed'");
+    } else if only_archived {
+        query.push_str(" AND g.type != 'Installed'");
     }
 
     if !search.is_empty() {
@@ -1323,4 +1436,273 @@ pub fn get_torrents_sr(conn: &Connection) -> Result<Vec<TorrentSR>> {
         list.push(item?);
     }
     Ok(list)
+}
+
+/// 根据最新的通用清洗规则和反续作漂移规则，重新计算当前数据库中所有游戏的名字、去重标记与代表选择，
+/// 并清理 steam_cache 中违反续作兼容性的错误缓存记录。
+/// 返回 (更新的游戏总数, 发生 base_name 变更的游戏数, 清理的错误缓存数)
+pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, usize)> {
+    struct RawGame {
+        id: i64,
+        original_name: String,
+        old_base: String,
+    }
+
+    let mut stmt = conn.prepare("SELECT id, original_name, base_name FROM games")?;
+    let games: Vec<RawGame> = stmt.query_map([], |row| {
+        Ok(RawGame {
+            id: row.get(0)?,
+            original_name: row.get(1)?,
+            old_base: row.get(2)?,
+        })
+    })?.filter_map(|r| r.ok()).collect();
+    drop(stmt);
+
+    if games.is_empty() {
+        return Ok((0, 0, 0));
+    }
+
+    struct ProcessedGame {
+        id: i64,
+        original_name: String,
+        clean_name: String,
+        base_name: String,
+        old_base: String,
+        is_exact_dup: bool,
+        is_version_dup: bool,
+        is_representative: bool,
+        base_changed: bool,
+    }
+
+    let mut processed: Vec<ProcessedGame> = games.into_iter().map(|g| {
+        let clean = crate::scanner::clean_name(&g.original_name);
+        let base = crate::scanner::base_game_name(&g.original_name);
+        let changed = base != g.old_base;
+        ProcessedGame {
+            id: g.id,
+            original_name: g.original_name,
+            clean_name: clean,
+            base_name: base,
+            old_base: g.old_base,
+            is_exact_dup: false,
+            is_version_dup: false,
+            is_representative: false,
+            base_changed: changed,
+        }
+    }).collect();
+
+    let mut base_groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, g) in processed.iter().enumerate() {
+        base_groups.entry(g.base_name.clone()).or_insert_with(Vec::new).push(idx);
+    }
+
+    for (_base, idx_list) in &base_groups {
+        let is_exact;
+        let is_version;
+
+        if idx_list.len() > 1 {
+            let mut clean_groups: HashMap<String, Vec<usize>> = HashMap::new();
+            for &idx in idx_list {
+                clean_groups.entry(processed[idx].clean_name.clone()).or_insert_with(Vec::new).push(idx);
+            }
+            if clean_groups.len() > 1 {
+                is_version = true;
+                is_exact = false;
+            } else {
+                is_version = false;
+                is_exact = true;
+            }
+        } else {
+            is_version = false;
+            is_exact = false;
+        }
+
+        for &idx in idx_list {
+            processed[idx].is_exact_dup = is_exact;
+            processed[idx].is_version_dup = is_version;
+        }
+
+        let mut best_idx = idx_list[0];
+        let mut min_len = processed[best_idx].original_name.len();
+        for &idx in idx_list.iter().skip(1) {
+            let len = processed[idx].original_name.len();
+            if len < min_len {
+                min_len = len;
+                best_idx = idx;
+            }
+        }
+        processed[best_idx].is_representative = true;
+    }
+
+    let mut update_stmt = conn.prepare(
+        "UPDATE games 
+         SET clean_name = ?, base_name = ?, is_exact_dup = ?, is_version_dup = ?, is_representative = ?
+         WHERE id = ?"
+    )?;
+
+    let mut base_changed_count = 0;
+    for g in &processed {
+        if g.base_changed {
+            base_changed_count += 1;
+            // 若旧 base_name 在 steam_cache 中存在（特别是包含手工映射与封面数据），平滑复制到新 base_name
+            let _ = conn.execute(
+                "INSERT OR IGNORE INTO steam_db.steam_cache (base_name, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres, is_manual)
+                 SELECT ?1, appid, name, local_cover, review_score_desc, positive_percent, total_reviews, recent_review_score_desc, recent_positive_percent, release_date, last_updated, genres, is_manual
+                 FROM steam_db.steam_cache WHERE base_name = ?2",
+                params![g.base_name, g.old_base],
+            );
+        }
+        update_stmt.execute(params![
+            g.clean_name,
+            g.base_name,
+            g.is_exact_dup as i32,
+            g.is_version_dup as i32,
+            g.is_representative as i32,
+            g.id
+        ])?;
+    }
+    drop(update_stmt);
+
+    let total_updated = processed.len();
+
+    // 清理 steam_cache 中违反续作兼容性或误匹配为辅助内容 (Soundtrack/DLC/文化包等) 的错误缓存记录
+    // 注意：用户手工映射的记录 (is_manual = 1) 视为用户明确意图，绝对严禁自动清理！
+    let aux_keywords = [
+        "soundtrack", "ost", "dlc", "expansion pass", "season pass", "pass",
+        "pack", "content", "creation kit", "kit", "wallpapers", "demo", "playtest",
+        "script extender", "tool", "sdk", "mod", "bundle", "upgrade",
+        "原声带", "文化包", "扩展包", "季票", "试玩", "礼包"
+    ];
+
+    let mut cache_stmt = conn.prepare(
+        "SELECT base_name, name FROM steam_db.steam_cache WHERE appid IS NOT NULL AND appid > 0 AND (is_manual IS NULL OR is_manual = 0)"
+    )?;
+    let bad_cache_keys: Vec<String> = cache_stmt.query_map([], |row| {
+        let b: String = row.get(0)?;
+        let n: Option<String> = row.get(1)?;
+        Ok((b, n))
+    })?.filter_map(|r| r.ok())
+    .filter(|(b, n)| {
+        if let Some(name) = n {
+            let is_sequel_bad = !crate::steam_service::is_sequel_compatible(b, name);
+            let b_lower = b.to_lowercase();
+            let n_lower = name.to_lowercase();
+            let is_aux_bad = aux_keywords.iter().any(|aux| n_lower.contains(aux) && !b_lower.contains(aux));
+            is_sequel_bad || is_aux_bad
+        } else {
+            false
+        }
+    })
+    .map(|(b, _)| b)
+    .collect();
+    drop(cache_stmt);
+
+    let purged_cache_count = bad_cache_keys.len();
+    for key in &bad_cache_keys {
+        let _ = conn.execute("DELETE FROM steam_db.steam_cache WHERE base_name = ? AND (is_manual IS NULL OR is_manual = 0)", [key]);
+    }
+
+    Ok((total_updated, base_changed_count, purged_cache_count))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_manual_mapping_protection_against_recalc() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE games (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_name TEXT,
+                clean_name TEXT,
+                base_name TEXT,
+                type TEXT,
+                source_path TEXT,
+                full_path TEXT UNIQUE,
+                size TEXT,
+                size_bytes INTEGER,
+                created TEXT,
+                is_exact_dup INTEGER DEFAULT 0,
+                is_version_dup INTEGER DEFAULT 0,
+                is_representative INTEGER DEFAULT 0
+            )",
+            [],
+        ).unwrap();
+
+        conn.execute("ATTACH DATABASE ':memory:' AS steam_db", []).unwrap();
+        conn.execute(
+            "CREATE TABLE steam_db.steam_cache (
+                base_name TEXT PRIMARY KEY,
+                appid INTEGER,
+                name TEXT,
+                local_cover TEXT,
+                review_score_desc INTEGER,
+                positive_percent INTEGER,
+                total_reviews INTEGER,
+                recent_review_score_desc INTEGER,
+                recent_positive_percent INTEGER,
+                release_date TEXT,
+                last_updated TEXT,
+                genres TEXT,
+                is_manual INTEGER DEFAULT 0
+            )",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, full_path) VALUES (?, ?, ?, ?)",
+            params!["FallenDoll_0.4.9", "fallendoll 0 4 9", "fallendoll 0 4 9", "D:\\Games\\FallenDoll_0.4.9"],
+        ).unwrap();
+
+        let manual_entry = SteamCacheEntry {
+            base_name: "fallendoll 0 4 9".to_string(),
+            appid: Some(1685960),
+            name: Some("洛夫克拉夫特行动：堕落玩偶".to_string()),
+            local_cover: Some("covers/1685960.jpg".to_string()),
+            review_score_desc: Some(6),
+            positive_percent: Some(75),
+            total_reviews: Some(120),
+            recent_review_score_desc: None,
+            recent_positive_percent: None,
+            release_date: None,
+            last_updated: None,
+            genres: None,
+            is_manual: Some(true),
+        };
+        upsert_steam_cache_entry_forced(&conn, &manual_entry).unwrap();
+
+        let bad_entry = SteamCacheEntry {
+            base_name: "game 2".to_string(),
+            appid: Some(999999),
+            name: Some("Game 3".to_string()),
+            local_cover: None,
+            review_score_desc: Some(6),
+            positive_percent: Some(75),
+            total_reviews: Some(120),
+            recent_review_score_desc: None,
+            recent_positive_percent: None,
+            release_date: None,
+            last_updated: None,
+            genres: None,
+            is_manual: Some(false),
+        };
+        insert_steam_cache_entry(&conn, &bad_entry).unwrap();
+
+        let res = recalculate_existing_games(&conn);
+        assert!(res.is_ok());
+
+        let new_base: String = conn.query_row("SELECT base_name FROM games WHERE id = 1", [], |r| r.get(0)).unwrap();
+        assert_eq!(new_base, "fallendoll");
+
+        let manual_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM steam_db.steam_cache WHERE base_name = 'fallendoll 0 4 9')", [], |r| r.get(0)).unwrap();
+        assert!(manual_exists, "Manual mapping must be protected!");
+
+        let migrated_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM steam_db.steam_cache WHERE base_name = 'fallendoll' AND appid = 1685960)", [], |r| r.get(0)).unwrap();
+        assert!(migrated_exists, "New base_name must inherit manual mapping!");
+
+        let bad_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM steam_db.steam_cache WHERE base_name = 'game 2')", [], |r| r.get(0)).unwrap();
+        assert!(!bad_exists, "Bad auto-match must be purged!");
+    }
 }

@@ -1,10 +1,10 @@
-mod db;
-mod error;
-mod scanner;
-mod epic;
-mod steam_api;
-mod steam_service;
-mod data_correction;
+pub mod db;
+pub mod error;
+pub mod scanner;
+pub mod epic;
+pub mod steam_api;
+pub mod steam_service;
+pub mod data_correction;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -56,6 +56,7 @@ fn get_games_list_command(
     sort: String,
     only_representatives: bool,
     only_installed: bool,
+    only_archived: Option<bool>,
     state: tauri::State<'_, db::DbState>,
 ) -> Result<Vec<db::Game>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -68,6 +69,7 @@ fn get_games_list_command(
         &sort,
         only_representatives,
         only_installed,
+        only_archived.unwrap_or(false),
     )
     .map_err(|e| e.to_string())
 }
@@ -144,6 +146,13 @@ fn clear_steam_cache_command(state: tauri::State<'_, db::DbState>) -> Result<(),
 }
 
 #[tauri::command]
+fn recalculate_games_command(state: tauri::State<'_, db::DbState>) -> Result<String, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let (total, base_changed, purged_cache) = db::recalculate_existing_games(&conn).map_err(|e| e.to_string())?;
+    Ok(format!("重新计算完成：更新 {} 个游戏，修正 {} 个游戏名称，清理 {} 个错误缓存", total, base_changed, purged_cache))
+}
+
+#[tauri::command]
 async fn fetch_steam_game_info_command(
     base_name: String,
     _app_handle: tauri::AppHandle,
@@ -178,43 +187,47 @@ async fn fetch_steam_game_info_command(
         };
         
         // 下载封面图
-        if let Some(cover_url) = entry.local_cover.clone() {
-            if let Some(app_id) = entry.appid {
-                let cover_filename = format!("{}.jpg", app_id);
-                let local_path = covers_dir.join(&cover_filename);
+        if let Some(app_id) = entry.appid {
+            let cover_filename = format!("{}.jpg", app_id);
+            let target_paths = [
+                covers_dir.join(&cover_filename),
+                std::path::PathBuf::from("covers").join(&cover_filename),
+                std::path::PathBuf::from("src-tauri/covers").join(&cover_filename),
+                std::path::PathBuf::from("../covers").join(&cover_filename),
+            ];
 
-                let mut download_success = false;
-                if let Ok(head_res) = client.head(&cover_url).send() {
-                    if head_res.status().is_success() {
-                        if let Ok(img_res) = client.get(&cover_url).send() {
-                            if img_res.status().is_success() {
-                                if let Ok(img_bytes) = img_res.bytes() {
-                                    let _ = std::fs::write(&local_path, &img_bytes);
-                                    download_success = true;
+            if !target_paths.iter().any(|p| p.exists()) {
+                let mut candidates = Vec::new();
+                if let Some(ref cover_url) = entry.local_cover {
+                    if cover_url.starts_with("http") {
+                        candidates.push(cover_url.clone());
+                    }
+                }
+                candidates.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id));
+                candidates.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900.jpg", app_id));
+                candidates.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/header.jpg", app_id));
+                candidates.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id));
+
+                for url in candidates {
+                    if let Ok(img_res) = client.get(&url).send() {
+                        if img_res.status().is_success() {
+                            if let Ok(img_bytes) = img_res.bytes() {
+                                if img_bytes.len() > 1024 {
+                                    for p in &target_paths {
+                                        if let Some(parent) = p.parent() {
+                                            let _ = std::fs::create_dir_all(parent);
+                                        }
+                                        let _ = std::fs::write(p, &img_bytes);
+                                    }
+                                    break;
                                 }
                             }
                         }
                     }
                 }
-
-                if !download_success {
-                    let fallback_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id);
-                    if let Ok(img_res) = client.get(&fallback_url).send() {
-                        if img_res.status().is_success() {
-                            if let Ok(img_bytes) = img_res.bytes() {
-                                let _ = std::fs::write(&local_path, &img_bytes);
-                                download_success = true;
-                            }
-                        }
-                    }
-                }
-
-                if download_success {
-                    entry.local_cover = Some(format!("covers/{}", cover_filename));
-                } else {
-                    entry.local_cover = None;
-                }
             }
+
+            entry.local_cover = Some(format!("covers/{}", cover_filename));
         }
         Ok(Some(entry))
     })
@@ -228,6 +241,57 @@ async fn fetch_steam_game_info_command(
     } else {
         Ok(None)
     }
+}
+
+/// 手工映射当前游戏到指定的 Steam 游戏（支持纯 AppID 或 Steam 商店 URL）
+#[tauri::command]
+async fn manual_map_steam_game_command(
+    base_name: String,
+    appid_input: String,
+    state: tauri::State<'_, db::DbState>,
+) -> Result<crate::steam_service::SteamCacheEntry, String> {
+    let app_id = crate::steam_service::parse_steam_appid(&appid_input)
+        .ok_or_else(|| "请输入有效的 Steam AppID 或商店页面链接 (例如: 239140)".to_string())?;
+
+    let lang = {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        match db::get_config(&conn, "language") {
+            Ok(Some(l)) => l,
+            _ => "schinese".to_string(),
+        }
+    };
+
+    let base_name_clone = base_name.clone();
+
+    let mut entry = tauri::async_runtime::spawn_blocking(move || -> Result<crate::steam_service::SteamCacheEntry, String> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        crate::steam_service::fetch_steam_game_by_appid(&client, app_id, &base_name_clone, &lang)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    entry.is_manual = Some(true);
+
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        db::upsert_steam_cache_entry_forced(&conn, &entry).map_err(|e| e.to_string())?;
+
+        // 若当前传入的 base_name 经清洗后有新的规范化 base_name（如带版本后缀的旧 base_name），
+        // 同步为规范化的 base_name 写入一份，确保无论使用新旧 base_name 均能命中
+        let cleaned_base = crate::scanner::base_game_name(&base_name);
+        if !cleaned_base.is_empty() && cleaned_base != base_name {
+            let mut alt_entry = entry.clone();
+            alt_entry.base_name = cleaned_base;
+            let _ = db::upsert_steam_cache_entry_forced(&conn, &alt_entry);
+        }
+    }
+
+    Ok(entry)
 }
 
 #[tauri::command]
@@ -261,6 +325,96 @@ fn open_game_folder_command(path: String) -> Result<(), String> {
         .arg(&path)
         .spawn()
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn delete_game_directory_command(
+    state: tauri::State<'_, db::DbState>,
+    path: String,
+) -> Result<(), String> {
+    let trimmed = path.trim().to_string();
+    if trimmed.is_empty() || trimmed.len() < 3 {
+        return Err("路径无效或不安全".to_string());
+    }
+
+    let p = std::path::PathBuf::from(&trimmed);
+    if p.parent().is_none() || p.components().count() <= 1 {
+        return Err("禁止删除根目录或驱动器根路径".to_string());
+    }
+
+    let norm_backslash = trimmed.replace('/', "\\");
+    let norm_forward = trimmed.replace('\\', "/");
+
+    // 校验路径是否确实存在于 games 数据库记录中，防止误删非游戏目录
+    {
+        let conn = state.0.lock().map_err(|e| e.to_string())?;
+        let in_db: bool = conn
+            .query_row(
+                "SELECT count(*) FROM games WHERE full_path = ?1 OR full_path = ?2 OR full_path = ?3",
+                rusqlite::params![&trimmed, &norm_backslash, &norm_forward],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|c| c > 0)
+            .unwrap_or(false);
+
+        if !in_db {
+            return Err("未在已识别的游戏库中找到该路径，拒绝删除".to_string());
+        }
+    }
+
+    // 在阻塞线程池中执行物理删除操作，避免大目录删除卡死主线程
+    let path_clone = trimmed.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let target = std::path::Path::new(&path_clone);
+        if target.exists() {
+            if target.is_dir() {
+                // 先尝试递归清除可能存在的只读属性
+                for entry in jwalk::WalkDir::new(target).skip_hidden(false) {
+                    if let Ok(entry) = entry {
+                        if let Ok(metadata) = entry.metadata() {
+                            let mut permissions = metadata.permissions();
+                            if permissions.readonly() {
+                                permissions.set_readonly(false);
+                                let _ = std::fs::set_permissions(entry.path(), permissions);
+                            }
+                        }
+                    }
+                }
+                if let Err(e) = std::fs::remove_dir_all(target) {
+                    #[cfg(target_os = "windows")]
+                    {
+                        use std::process::Command;
+                        let output = Command::new("cmd")
+                            .args(["/C", "rmdir", "/S", "/Q", &path_clone])
+                            .output();
+                        if let Ok(out) = output {
+                            if !out.status.success() {
+                                return Err(format!("删除目录失败: {}", String::from_utf8_lossy(&out.stderr)));
+                            }
+                        } else {
+                            return Err(format!("删除目录失败: {}", e));
+                        }
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        return Err(format!("删除目录失败: {}", e));
+                    }
+                }
+            } else if target.is_file() {
+                std::fs::remove_file(target)
+                    .map_err(|err| format!("删除文件失败: {}", err))?;
+            }
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("执行删除任务失败: {}", e))??;
+
+    // 从数据库中删除记录并更新代表游戏状态
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    db::delete_game_by_path(&conn, &trimmed).map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -300,6 +454,7 @@ struct ScrapeProgress {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct ScrapedTorrent {
     torrent_id: String,
     name: String,
@@ -627,31 +782,45 @@ fn sync_steam_reviews_blocking(
                 let final_entry = if let Some(mut entry) = maybe_entry {
                     if let Some(app_id) = entry.appid {
                         let cover_filename = format!("{}.jpg", app_id);
-                        let local_path = covers_dir_clone.join(&cover_filename);
-                        if local_path.exists() {
-                            entry.local_cover = Some(format!("covers/{}", cover_filename));
-                        } else {
+                        let target_paths = [
+                            covers_dir_clone.join(&cover_filename),
+                            std::path::PathBuf::from("covers").join(&cover_filename),
+                            std::path::PathBuf::from("src-tauri/covers").join(&cover_filename),
+                            std::path::PathBuf::from("../covers").join(&cover_filename),
+                        ];
+
+                        if !target_paths.iter().any(|p| p.exists()) {
                             let mut urls_to_try = Vec::new();
-                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id));
                             if let Some(ref u) = entry.local_cover {
                                 if u.starts_with("http") && !urls_to_try.contains(u) {
                                     urls_to_try.push(u.clone());
                                 }
                             }
                             urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id));
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900.jpg", app_id));
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/header.jpg", app_id));
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id));
 
                             for u in urls_to_try {
                                 if let Ok(img_res) = client_clone.get(&u).send() {
                                     if img_res.status().is_success() {
                                         if let Ok(img_bytes) = img_res.bytes() {
-                                            let _ = std::fs::write(&local_path, &img_bytes);
-                                            entry.local_cover = Some(format!("covers/{}", cover_filename));
-                                            break;
+                                            if img_bytes.len() > 1024 {
+                                                for p in &target_paths {
+                                                    if let Some(parent) = p.parent() {
+                                                        let _ = std::fs::create_dir_all(parent);
+                                                    }
+                                                    let _ = std::fs::write(p, &img_bytes);
+                                                }
+                                                break;
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+
+                        entry.local_cover = Some(format!("covers/{}", cover_filename));
                     }
                     Some(entry)
                 } else {
@@ -1457,21 +1626,41 @@ pub fn run() {
         })
         .register_uri_scheme_protocol("cover", |_app_handle, request| {
             let uri = request.uri();
-            let filename = uri.path().trim_start_matches('/');
+            let raw_path = uri.path().trim_start_matches('/');
+            let clean_filename = if let Some(stripped) = raw_path.strip_prefix("cover://") {
+                stripped
+            } else if let Some(stripped) = raw_path.strip_prefix("covers/") {
+                stripped
+            } else if let Some(stripped) = raw_path.strip_prefix("covers\\") {
+                stripped
+            } else {
+                raw_path
+            }.trim_start_matches('/').trim_start_matches('\\');
             
-            // 从 exe 所在目录解析 covers 路径
+            // 优先从 exe 所在目录解析 covers 路径
             let mut path = std::env::current_exe().unwrap_or_default();
             path.pop(); // 移除 exe 文件名，保留目录
             path.push("covers");
-            path.push(filename);
+            path.push(clean_filename);
             
-            let body = if path.exists() {
-                std::fs::read(&path).unwrap_or_default()
+            let path_to_read = if path.exists() {
+                Some(path)
+            } else {
+                let candidates = [
+                    std::path::PathBuf::from("covers").join(clean_filename),
+                    std::path::PathBuf::from("src-tauri/covers").join(clean_filename),
+                    std::path::PathBuf::from("../covers").join(clean_filename),
+                ];
+                candidates.into_iter().find(|p| p.exists())
+            };
+            
+            let body = if let Some(p) = path_to_read {
+                std::fs::read(&p).unwrap_or_default()
             } else {
                 Vec::new()
             };
             
-            let mime = if filename.ends_with(".png") {
+            let mime = if clean_filename.ends_with(".png") {
                 "image/png"
             } else {
                 "image/jpeg"
@@ -1494,12 +1683,14 @@ pub fn run() {
             start_scan_command,
             cancel_scan_command,
             open_game_folder_command,
+            delete_game_directory_command,
             get_config_command,
             set_config_command,
             get_all_config_command,
             get_scan_history_command,
             clear_steam_cache_command,
             fetch_steam_game_info_command,
+            manual_map_steam_game_command,
             get_all_genres_command,
             get_genre_stats_command,
             get_rating_stats_command,
@@ -1517,7 +1708,8 @@ pub fn run() {
             clear_data_1337x,
             data_correction::trigger_data_correction_command,
             data_correction::cancel_data_correction_command,
-            data_correction::get_data_correction_status_command
+            data_correction::get_data_correction_status_command,
+            recalculate_games_command
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");
