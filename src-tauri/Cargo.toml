@@ -3,6 +3,7 @@ name = "hoardster"
 version = "1.0.15"
 description = "Tauri local game index application"
 edition = "2021"
+default-run = "hoardster"
 
 [lib]
 name = "hoardster_lib"
