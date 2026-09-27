@@ -41,7 +41,7 @@ export default function PosterWall({
     onRefresh,
   });
 
-  const { gridRef, effectivePageSize } = useDynamicGrid({
+  const { containerRef, gridRef, effectivePageSize } = useDynamicGrid({
     targetPageSize: pageSize || (viewMode === "tile" ? 35 : 25),
     enabled: viewMode === "tile",
   });
@@ -57,7 +57,7 @@ export default function PosterWall({
   }, [currentPage, totalPages, setCurrentPage]);
 
   return (
-    <div className="panel" style={{ display: "block" }}>
+    <div className="panel" ref={containerRef} style={{ display: "block" }}>
       <div className="panel-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.5rem" }}>
         <div>
           <h2 style={{ margin: 0 }}>{title}</h2>
