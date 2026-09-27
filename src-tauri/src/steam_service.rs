@@ -776,6 +776,380 @@ impl ThrottleController {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct SteamSyncTarget {
+    pub base_name: String,
+    pub appid: Option<u32>,
+}
+
+impl SteamSyncTarget {
+    pub fn from_name(name: impl Into<String>) -> Self {
+        Self {
+            base_name: name.into(),
+            appid: None,
+        }
+    }
+
+    pub fn with_appid(name: impl Into<String>, appid: Option<u32>) -> Self {
+        Self {
+            base_name: name.into(),
+            appid,
+        }
+    }
+}
+
+pub enum ProgressReporter {
+    ScanProgress {
+        step: String,
+    },
+    ScrapeProgress {
+        event_name: String,
+    },
+}
+
+impl ProgressReporter {
+    pub fn emit_progress(&self, app_handle: &tauri::AppHandle, current: usize, total: usize, message: &str, status: &str) {
+        use tauri::Emitter;
+        match self {
+            ProgressReporter::ScanProgress { step } => {
+                let _ = app_handle.emit(
+                    "scan-progress",
+                    serde_json::json!({
+                        "step": step,
+                        "message": message,
+                        "current": current,
+                        "total": total,
+                    }),
+                );
+            }
+            ProgressReporter::ScrapeProgress { event_name } => {
+                let _ = app_handle.emit(
+                    event_name,
+                    serde_json::json!({
+                        "current_page": current as u32,
+                        "total_pages": total as u32,
+                        "message": message,
+                        "status": status,
+                    }),
+                );
+            }
+        }
+    }
+}
+
+/// 通用的多线程 Steam 元数据同步引擎（供 Skidrow/Reloaded、1337x 抓取与本地盘库扫描全场景复用）
+pub fn sync_steam_metadata_blocking(
+    app_handle: tauri::AppHandle,
+    targets: Vec<SteamSyncTarget>,
+    reporter: ProgressReporter,
+    cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::result::Result<usize, String> {
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    let total_targets = targets.len();
+    if total_targets == 0 {
+        return Ok(0);
+    }
+
+    // 1. 从数据库读取线程数、安全延迟与语言设置
+    let (threads, delay_ms, language) = {
+        if let Ok(conn) = crate::db::get_connection() {
+            let t_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_threads'", [], |r| r.get(0)).unwrap_or_else(|_| "10".to_string());
+            let d_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_delay_ms'", [], |r| r.get(0)).unwrap_or_else(|_| "300".to_string());
+            let l_str: String = conn.query_row("SELECT value FROM config WHERE key = 'language'", [], |r| r.get(0)).unwrap_or_else(|_| "schinese".to_string());
+            (
+                t_str.parse::<usize>().unwrap_or(10).max(1).min(50),
+                d_str.parse::<u64>().unwrap_or(300),
+                l_str,
+            )
+        } else {
+            (10, 300, "schinese".to_string())
+        }
+    };
+
+    let client = Client::builder()
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    // 任务队列：(SteamSyncTarget, retry_count)
+    let queue: Arc<Mutex<VecDeque<(SteamSyncTarget, usize)>>> = Arc::new(Mutex::new(
+        targets.into_iter().map(|t| (t, 0)).collect()
+    ));
+
+    let throttle_ctrl = Arc::new(Mutex::new(ThrottleController::new(threads)));
+    let active_tasks = Arc::new(AtomicUsize::new(0));
+
+    let covers_dir = {
+        let mut p = std::env::current_exe().unwrap_or_default();
+        p.pop();
+        p.push("covers");
+        let _ = std::fs::create_dir_all(&p);
+        Arc::new(p)
+    };
+
+    enum WorkerMessage {
+        StatusNotification {
+            message: String,
+        },
+        ItemProcessed {
+            thread_idx: usize,
+            base_name: String,
+            entry: Option<SteamCacheEntry>,
+            current_concurrency: usize,
+            is_ramping: bool,
+        },
+    }
+
+    let (tx, rx) = std::sync::mpsc::channel::<WorkerMessage>();
+    let mut thread_handles = Vec::new();
+
+    for thread_idx in 0..threads {
+        let tx_clone = tx.clone();
+        let queue_clone = Arc::clone(&queue);
+        let cancel_clone = Arc::clone(&cancel_flag);
+        let throttle_ctrl_clone = Arc::clone(&throttle_ctrl);
+        let active_tasks_clone = Arc::clone(&active_tasks);
+        let client_clone = client.clone();
+        let lang = language.clone();
+        let covers_dir_clone = Arc::clone(&covers_dir);
+
+        let handle = std::thread::spawn(move || {
+            loop {
+                if cancel_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                // 检查自适应爬坡（满1分钟 +1 并发）
+                let (current_threads, is_ramping) = {
+                    let mut ctrl = throttle_ctrl_clone.lock().unwrap();
+                    let ramp_msg = ctrl.check_ramp();
+                    let cur = ctrl.get_current_threads();
+                    let ramping = ctrl.is_ramping();
+                    drop(ctrl);
+                    if let Some((_c, msg)) = ramp_msg {
+                        let _ = tx_clone.send(WorkerMessage::StatusNotification { message: msg });
+                    }
+                    (cur, ramping)
+                };
+
+                // 若当前线程号超出当前允许的并发限制，休眠等待
+                if thread_idx >= current_threads {
+                    let is_done = {
+                        let q = queue_clone.lock().unwrap();
+                        q.is_empty() && active_tasks_clone.load(Ordering::SeqCst) == 0
+                    };
+                    if is_done {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+
+                // 提取下一个待抓取目标
+                let task = {
+                    let mut q = queue_clone.lock().unwrap();
+                    q.pop_front()
+                };
+
+                let (target, retry_count) = match task {
+                    Some(item) => {
+                        active_tasks_clone.fetch_add(1, Ordering::SeqCst);
+                        item
+                    }
+                    None => {
+                        if active_tasks_clone.load(Ordering::SeqCst) > 0 {
+                            std::thread::sleep(Duration::from_millis(100));
+                            continue;
+                        } else {
+                            break;
+                        }
+                    }
+                };
+
+                // 根据当前并发保护状态调整请求延迟
+                let sleep_ms = if is_ramping && current_threads == 1 {
+                    delay_ms.max(1000)
+                } else if is_ramping {
+                    delay_ms.max(500)
+                } else {
+                    delay_ms
+                };
+                if sleep_ms > 0 {
+                    std::thread::sleep(Duration::from_millis(sleep_ms));
+                }
+
+                if cancel_clone.load(Ordering::Relaxed) {
+                    active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
+                    break;
+                }
+
+                let (maybe_entry, got_403) = if let Some(app_id) = target.appid {
+                    let (res, is_403) = fetch_steam_game_by_appid_ext(&client_clone, app_id, &target.base_name, &lang);
+                    if is_403 {
+                        (None, true)
+                    } else if res.is_some() {
+                        (res, false)
+                    } else {
+                        fetch_steam_game_info_ext(&client_clone, &target.base_name, &lang)
+                    }
+                } else {
+                    fetch_steam_game_info_ext(&client_clone, &target.base_name, &lang)
+                };
+
+                if got_403 {
+                    let notify_msg = {
+                        let mut ctrl = throttle_ctrl_clone.lock().unwrap();
+                        let (_c, msg) = ctrl.on_403(&target.base_name);
+                        msg
+                    };
+                    let _ = tx_clone.send(WorkerMessage::StatusNotification { message: notify_msg });
+
+                    if retry_count < 2 {
+                        {
+                            let mut q = queue_clone.lock().unwrap();
+                            q.push_back((target, retry_count + 1));
+                        }
+                        active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(2000));
+                        continue;
+                    }
+                }
+
+                // 处理封面与结果装配
+                let final_entry = if let Some(mut entry) = maybe_entry {
+                    if let Some(app_id) = entry.appid {
+                        let cover_filename = format!("{}.jpg", app_id);
+                        let target_paths = [
+                            covers_dir_clone.join(&cover_filename),
+                            std::path::PathBuf::from("covers").join(&cover_filename),
+                            std::path::PathBuf::from("src-tauri/covers").join(&cover_filename),
+                            std::path::PathBuf::from("../covers").join(&cover_filename),
+                        ];
+
+                        if !target_paths.iter().any(|p| p.exists()) {
+                            let mut urls_to_try = Vec::new();
+                            if let Some(ref u) = entry.local_cover {
+                                if u.starts_with("http") && !urls_to_try.contains(u) {
+                                    urls_to_try.push(u.clone());
+                                }
+                            }
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id));
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900.jpg", app_id));
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/header.jpg", app_id));
+                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id));
+
+                            for u in urls_to_try {
+                                if let Ok(img_res) = client_clone.get(&u).send() {
+                                    if img_res.status().is_success() {
+                                        if let Ok(img_bytes) = img_res.bytes() {
+                                            if img_bytes.len() > 1024 {
+                                                for p in &target_paths {
+                                                    if let Some(parent) = p.parent() {
+                                                        let _ = std::fs::create_dir_all(parent);
+                                                    }
+                                                    let _ = std::fs::write(p, &img_bytes);
+                                                }
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        entry.local_cover = Some(format!("covers/{}", cover_filename));
+                    }
+                    Some(entry)
+                } else {
+                    None
+                };
+
+                let _ = tx_clone.send(WorkerMessage::ItemProcessed {
+                    thread_idx: thread_idx + 1,
+                    base_name: target.base_name,
+                    entry: final_entry,
+                    current_concurrency: current_threads,
+                    is_ramping,
+                });
+
+                active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
+            }
+        });
+        thread_handles.push(handle);
+    }
+
+    drop(tx);
+    drop(client);
+
+    let mut processed = 0;
+    let mut new_steam_entries = 0;
+    let conn = crate::db::get_connection().map_err(|e| e.to_string())?;
+
+    for msg in rx {
+        if cancel_flag.load(Ordering::Relaxed) {
+            reporter.emit_progress(&app_handle, processed, total_targets, "Steam 信息获取已被用户取消", "error");
+            for handle in thread_handles {
+                let _ = handle.join();
+            }
+            return Err("扫描已被用户取消".to_string());
+        }
+
+        match msg {
+            WorkerMessage::StatusNotification { message } => {
+                reporter.emit_progress(&app_handle, processed, total_targets, &message, "fetching");
+            }
+            WorkerMessage::ItemProcessed { thread_idx, base_name, entry, current_concurrency, is_ramping } => {
+                processed += 1;
+                let thread_tag = format!("[线程#{}/{}]", thread_idx, threads);
+                let ramp_tag = if is_ramping {
+                    format!(" [保护恢复中: {}/{}并发]", current_concurrency, threads)
+                } else {
+                    format!(" [{}并发]", current_concurrency)
+                };
+                let display_msg = format!("正在获取 Steam 游戏评价 ({} / {}) {}{}: {}", processed, total_targets, thread_tag, ramp_tag, base_name);
+                reporter.emit_progress(&app_handle, processed, total_targets, &display_msg, "fetching");
+
+                if let Some(entry) = entry {
+                    if entry.appid.is_some() {
+                        for attempt in 0..3 {
+                            match crate::db::insert_steam_cache_entry(&conn, &entry) {
+                                Ok(_) => {
+                                    new_steam_entries += 1;
+                                    break;
+                                }
+                                Err(e) => {
+                                    let err_str = e.to_string();
+                                    if err_str.contains("locked") && attempt < 2 {
+                                        std::thread::sleep(Duration::from_millis(300 * (attempt as u64 + 1)));
+                                    } else {
+                                        eprintln!("Error inserting steam cache for {}: {}", base_name, e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for handle in thread_handles {
+        let _ = handle.join();
+    }
+
+    // 自动同步游戏元数据与封面关联
+    let _ = crate::db::sync_game_metadata_covers(&conn);
+
+    Ok(new_steam_entries)
+}
+
+
 /// 解析用户输入的 Steam AppID（支持纯数字、完整商店 URL、社区 URL）
 pub fn parse_steam_appid(input: &str) -> Option<u32> {
     let trimmed = input.trim();

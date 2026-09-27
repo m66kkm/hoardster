@@ -24,15 +24,20 @@ pub struct ScrapeState {
 }
 
 #[tauri::command]
-fn get_scan_paths_command(state: tauri::State<'_, db::DbState>) -> Result<Vec<String>, String> {
+fn get_scan_paths_command(state: tauri::State<'_, db::DbState>) -> Result<Vec<db::ScanPathEntry>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     db::get_scan_paths(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn add_scan_path_command(state: tauri::State<'_, db::DbState>, path: String) -> Result<(), String> {
+fn add_scan_path_command(
+    state: tauri::State<'_, db::DbState>,
+    path: String,
+    scan_type: Option<String>,
+) -> Result<(), String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
-    db::add_scan_path(&conn, &path).map_err(|e| e.to_string())
+    let st = scan_type.unwrap_or_else(|| "installed".to_string());
+    db::add_scan_path(&conn, &path, &st).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -607,309 +612,23 @@ fn sync_steam_reviews_blocking(
     missing_games: Vec<String>,
     cancel_flag: Arc<AtomicBool>,
 ) -> Result<bool, String> {
-    use tauri::Emitter;
-    use std::collections::VecDeque;
-    use std::sync::atomic::AtomicUsize;
-    use std::time::Duration;
+    let targets = missing_games
+        .into_iter()
+        .map(crate::steam_service::SteamSyncTarget::from_name)
+        .collect();
 
-    let total_missing = missing_games.len();
-    if total_missing == 0 {
-        return Ok(false);
+    let res = crate::steam_service::sync_steam_metadata_blocking(
+        app_handle,
+        targets,
+        crate::steam_service::ProgressReporter::ScrapeProgress { event_name },
+        cancel_flag,
+    );
+
+    match res {
+        Ok(_) => Ok(false),
+        Err(e) if e.contains("取消") => Ok(true),
+        Err(e) => Err(e),
     }
-
-    // 1. 读取配置文件中设置的线程数与延迟（不强制写死限流值）
-    let (threads, delay_ms, language) = {
-        if let Ok(conn) = crate::db::get_connection() {
-            let t_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_threads'", [], |r| r.get(0)).unwrap_or_else(|_| "10".to_string());
-            let d_str: String = conn.query_row("SELECT value FROM config WHERE key = 'steam_api_delay_ms'", [], |r| r.get(0)).unwrap_or_else(|_| "300".to_string());
-            let l_str: String = conn.query_row("SELECT value FROM config WHERE key = 'language'", [], |r| r.get(0)).unwrap_or_else(|_| "schinese".to_string());
-            (
-                t_str.parse::<usize>().unwrap_or(10).max(1).min(20),
-                d_str.parse::<u64>().unwrap_or(300),
-                l_str,
-            )
-        } else {
-            (10, 300, "schinese".to_string())
-        }
-    };
-
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    // 任务队列：(base_name, retry_count)
-    let queue: Arc<Mutex<VecDeque<(String, usize)>>> = Arc::new(Mutex::new(
-        missing_games.into_iter().map(|name| (name, 0)).collect()
-    ));
-
-    // 自适应频控控制器：当出现 403 时降为单线程保护期 1 分钟；保护期恢复时每 1 分钟 +1 并发，若 +1 后遇 403 则回滚 -1
-    use crate::steam_service::ThrottleController;
-
-    let throttle_ctrl = Arc::new(Mutex::new(ThrottleController::new(threads)));
-    let active_tasks = Arc::new(AtomicUsize::new(0));
-
-    let covers_dir = {
-        let mut p = std::env::current_exe().unwrap_or_default();
-        p.pop();
-        p.push("covers");
-        let _ = std::fs::create_dir_all(&p);
-        Arc::new(p)
-    };
-
-    enum WorkerMessage {
-        StatusNotification {
-            message: String,
-        },
-        ItemProcessed {
-            base_name: String,
-            entry: Option<crate::steam_service::SteamCacheEntry>,
-            current_concurrency: usize,
-            is_ramping: bool,
-        },
-    }
-
-    let (tx, rx) = std::sync::mpsc::channel::<WorkerMessage>();
-
-    let mut thread_handles = Vec::new();
-    for thread_idx in 0..threads {
-        let tx_clone = tx.clone();
-        let queue_clone = Arc::clone(&queue);
-        let cancel_clone = Arc::clone(&cancel_flag);
-        let throttle_ctrl_clone = Arc::clone(&throttle_ctrl);
-        let active_tasks_clone = Arc::clone(&active_tasks);
-        let client_clone = client.clone();
-        let lang = language.clone();
-        let covers_dir_clone = Arc::clone(&covers_dir);
-
-        let handle = std::thread::spawn(move || {
-            loop {
-                if cancel_clone.load(Ordering::Relaxed) {
-                    break;
-                }
-
-                // 检查自适应爬坡（满1分钟 +1 并发）
-                let (current_threads, is_ramping) = {
-                    let mut ctrl = throttle_ctrl_clone.lock().unwrap();
-                    let ramp_msg = ctrl.check_ramp();
-                    let cur = ctrl.get_current_threads();
-                    let ramping = ctrl.is_ramping();
-                    drop(ctrl);
-                    if let Some((_c, msg)) = ramp_msg {
-                        let _ = tx_clone.send(WorkerMessage::StatusNotification { message: msg });
-                    }
-                    (cur, ramping)
-                };
-
-                // 若当前线程号超出当前允许的并发限制，休眠等待
-                if thread_idx >= current_threads {
-                    // 若所有任务均已结束且队列为空，无须继续等待，直接退出
-                    let is_done = {
-                        let q = queue_clone.lock().unwrap();
-                        q.is_empty() && active_tasks_clone.load(Ordering::SeqCst) == 0
-                    };
-                    if is_done {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(500));
-                    continue;
-                }
-
-                // 尝试提取下一个待抓取游戏
-                let task = {
-                    let mut q = queue_clone.lock().unwrap();
-                    q.pop_front()
-                };
-
-                let (base_name, retry_count) = match task {
-                    Some(item) => {
-                        active_tasks_clone.fetch_add(1, Ordering::SeqCst);
-                        item
-                    }
-                    None => {
-                        // 队列暂空：若仍有线程在处理任务（可能因 403 重新入队），则等待片刻
-                        if active_tasks_clone.load(Ordering::SeqCst) > 0 {
-                            std::thread::sleep(Duration::from_millis(100));
-                            continue;
-                        } else {
-                            break;
-                        }
-                    }
-                };
-
-                // 根据当前并发保护状态调整请求延迟
-                let sleep_ms = if is_ramping && current_threads == 1 {
-                    delay_ms.max(1000)
-                } else if is_ramping {
-                    delay_ms.max(500)
-                } else {
-                    delay_ms
-                };
-                if sleep_ms > 0 {
-                    std::thread::sleep(Duration::from_millis(sleep_ms));
-                }
-
-                if cancel_clone.load(Ordering::Relaxed) {
-                    active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
-                    break;
-                }
-
-                let (maybe_entry, got_403) = crate::steam_service::fetch_steam_game_info_ext(&client_clone, &base_name, &lang);
-
-                if got_403 {
-                    // 遭遇 403：触发降级或回滚（+1后遇403则回滚到 -1）
-                    let notify_msg = {
-                        let mut ctrl = throttle_ctrl_clone.lock().unwrap();
-                        let (_c, msg) = ctrl.on_403(&base_name);
-                        msg
-                    };
-                    let _ = tx_clone.send(WorkerMessage::StatusNotification { message: notify_msg });
-
-                    // 若未达到最大重试次数 (2次)，重新放入队列尾部等待重试
-                    if retry_count < 2 {
-                        {
-                            let mut q = queue_clone.lock().unwrap();
-                            q.push_back((base_name, retry_count + 1));
-                        }
-                        active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
-                        std::thread::sleep(Duration::from_millis(2000));
-                        continue;
-                    }
-                }
-
-                // 处理封面与结果装配
-                let final_entry = if let Some(mut entry) = maybe_entry {
-                    if let Some(app_id) = entry.appid {
-                        let cover_filename = format!("{}.jpg", app_id);
-                        let target_paths = [
-                            covers_dir_clone.join(&cover_filename),
-                            std::path::PathBuf::from("covers").join(&cover_filename),
-                            std::path::PathBuf::from("src-tauri/covers").join(&cover_filename),
-                            std::path::PathBuf::from("../covers").join(&cover_filename),
-                        ];
-
-                        if !target_paths.iter().any(|p| p.exists()) {
-                            let mut urls_to_try = Vec::new();
-                            if let Some(ref u) = entry.local_cover {
-                                if u.starts_with("http") && !urls_to_try.contains(u) {
-                                    urls_to_try.push(u.clone());
-                                }
-                            }
-                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id));
-                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900.jpg", app_id));
-                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/header.jpg", app_id));
-                            urls_to_try.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id));
-
-                            for u in urls_to_try {
-                                if let Ok(img_res) = client_clone.get(&u).send() {
-                                    if img_res.status().is_success() {
-                                        if let Ok(img_bytes) = img_res.bytes() {
-                                            if img_bytes.len() > 1024 {
-                                                for p in &target_paths {
-                                                    if let Some(parent) = p.parent() {
-                                                        let _ = std::fs::create_dir_all(parent);
-                                                    }
-                                                    let _ = std::fs::write(p, &img_bytes);
-                                                }
-                                                break;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        entry.local_cover = Some(format!("covers/{}", cover_filename));
-                    }
-                    Some(entry)
-                } else {
-                    None
-                };
-
-                let _ = tx_clone.send(WorkerMessage::ItemProcessed {
-                    base_name,
-                    entry: final_entry,
-                    current_concurrency: current_threads,
-                    is_ramping,
-                });
-
-                active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
-            }
-        });
-        thread_handles.push(handle);
-    }
-
-    drop(tx);
-    drop(client); // 释放 client 资源
-
-    let mut processed = 0;
-    let conn = crate::db::get_connection().map_err(|e| e.to_string())?;
-
-    for msg in rx {
-        if cancel_flag.load(Ordering::Relaxed) {
-            let _ = app_handle.emit(&event_name, ScrapeProgress {
-                current_page: processed,
-                total_pages: total_missing as u32,
-                message: "Steam 信息获取已被用户取消".to_string(),
-                status: "error".to_string(),
-            });
-            for handle in thread_handles {
-                let _ = handle.join();
-            }
-            return Ok(true);
-        }
-
-        match msg {
-            WorkerMessage::StatusNotification { message } => {
-                let _ = app_handle.emit(&event_name, ScrapeProgress {
-                    current_page: processed,
-                    total_pages: total_missing as u32,
-                    message,
-                    status: "fetching".to_string(),
-                });
-            }
-            WorkerMessage::ItemProcessed { base_name, entry, current_concurrency, is_ramping } => {
-                processed += 1;
-                let ramp_tag = if is_ramping {
-                    format!(" [保护恢复中: {}/{}线程]", current_concurrency, threads)
-                } else {
-                    String::new()
-                };
-                let _ = app_handle.emit(&event_name, ScrapeProgress {
-                    current_page: processed,
-                    total_pages: total_missing as u32,
-                    message: format!("正在向 Steam 获取游戏评价 ({} / {}){}: {}", processed, total_missing, ramp_tag, base_name),
-                    status: "fetching".to_string(),
-                });
-
-                if let Some(entry) = entry {
-                    if entry.appid.is_some() {
-                        for attempt in 0..3 {
-                            match crate::db::insert_steam_cache_entry(&conn, &entry) {
-                                Ok(_) => break,
-                                Err(e) => {
-                                    let err_str = e.to_string();
-                                    if err_str.contains("locked") && attempt < 2 {
-                                        std::thread::sleep(Duration::from_millis(300 * (attempt as u64 + 1)));
-                                    } else {
-                                        eprintln!("Error inserting steam cache for {}: {}", base_name, e);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    for handle in thread_handles {
-        let _ = handle.join();
-    }
-
-    Ok(false)
 }
 
 #[tauri::command]

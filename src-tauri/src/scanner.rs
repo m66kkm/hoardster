@@ -1,13 +1,10 @@
-use crate::db::{Game, get_scan_paths, get_steam_cache, get_config, insert_steam_cache_entry, save_scanned_games, insert_scan_history};
-use crate::steam_service::ThrottleController;
-use reqwest::blocking::Client;
+use crate::db::{Game, get_scan_paths, get_steam_cache, get_config, save_scanned_games, insert_scan_history};
 use regex::Regex;
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 use rayon::prelude::*;
 
@@ -310,12 +307,12 @@ pub fn detect_steam_appid_from_game_dir<P: AsRef<Path>>(dir: P) -> Option<u32> {
     candidates.first().map(|c| c.appid)
 }
 
-/// 根据用户定义的归档规则判定游戏分类：
-/// 满足以下两个条件之一即为归档游戏：
-/// 1. 当前目录中没有子目录，且一级目录中没有 exe 文件；
-/// 2. 本身是 iso 文件，或者目录中包含 iso 文件。
-/// 否则判定为已安装游戏 (Installed)。
-fn classify_game_type<P: AsRef<Path>>(path: P, is_dir: bool, is_file_iso: bool) -> String {
+/// 根据用户定义的分类规则判定游戏类型：
+/// 1. 本身是 iso 文件，或者目录中包含 iso 文件 => "ISO"
+/// 2. 若来自于“归档路径”根目录：即使有 exe 文件或子目录，也统一归属为已归档应用 => "Archive"
+/// 3. 若来自于“安装目录”根目录：当前目录中没有子目录，且一级目录中没有 exe 文件 => "Archive"
+/// 4. 否则判定为已安装游戏 => "Installed"
+pub fn classify_game_type<P: AsRef<Path>>(path: P, is_dir: bool, is_file_iso: bool, is_archived_root: bool) -> String {
     if is_file_iso {
         return "ISO".to_string();
     }
@@ -349,18 +346,34 @@ fn classify_game_type<P: AsRef<Path>>(path: P, is_dir: bool, is_file_iso: bool) 
             }
         }
 
-        // 条件 2：目录中包含 iso 文件
+        // 条件 1：目录中包含 iso 文件
         if has_iso || has_nested_iso(path.as_ref(), 4) {
             return "ISO".to_string();
         }
 
-        // 条件 1：当前目录中没有子目录，一级目录中没有 exe 文件
+        // 条件 2：来自于归档根路径，无论是否包含 exe 文件或子目录，均归属于归档游戏
+        if is_archived_root {
+            return "Archive".to_string();
+        }
+
+        // 条件 3：来自于安装根路径，但没有子目录且一级目录没有 exe 文件 => Archive
         if !has_subdirs && !has_exe_in_root {
             return "Archive".to_string();
         }
     }
 
     "Installed".to_string()
+}
+
+/// 归一化游戏类型大类用于去重判断：
+/// - "installed"（包括 Installed, Directory, 安装等）
+/// - "archived"（包括 Archive, archived, ISO, 归档等）
+/// 规则：重复仅在同种类型大类内判断，安装与归档互不视为重复。
+pub fn normalize_dup_type_category(game_type: &str) -> &'static str {
+    match game_type.trim().to_lowercase().as_str() {
+        "installed" | "directory" | "安装" => "installed",
+        _ => "archived",
+    }
 }
 
 fn has_nested_iso<P: AsRef<Path>>(path: P, max_depth: usize) -> bool {
@@ -446,22 +459,6 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         .map(|s| s.to_lowercase())
         .collect();
 
-    // 从数据库 config 表读取 steam_api_delay_ms 配置
-    let steam_api_delay_ms: u64 = get_config(&conn, "steam_api_delay_ms")
-        .map_err(|e| e.to_string())?
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(300);
-
-    // 从数据库 config 表读取 steam_api_threads 配置
-    let steam_api_threads: usize = get_config(&conn, "steam_api_threads")
-        .map_err(|e| e.to_string())?
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
-
-    let language = get_config(&conn, "language")
-        .map_err(|e| e.to_string())?
-        .unwrap_or_else(|| "schinese".to_string());
-
     let _ = app_handle.emit(
         "scan-progress",
         ProgressEvent {
@@ -474,7 +471,10 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
 
     let mut raw_scanned = Vec::new();
 
-    for (p_idx, path_str) in scan_paths.iter().enumerate() {
+    for (p_idx, path_entry) in scan_paths.iter().enumerate() {
+        let path_str = &path_entry.path;
+        let is_archived_root = path_entry.scan_type == "archived";
+
         // 检查取消标志
         if cancel_flag.load(Ordering::Relaxed) {
             return Err("扫描已被用户取消".to_string());
@@ -528,7 +528,7 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
                     .map_or(false, |ext| ext.eq_ignore_ascii_case("iso"));
 
                 if is_dir || is_iso {
-                    let r#type = classify_game_type(entry.path(), is_dir, is_iso);
+                    let r#type = classify_game_type(entry.path(), is_dir, is_iso, is_archived_root);
                     let full_path = entry.path().to_string_lossy().into_owned();
 
                     let created_str = if let Ok(created_time) = metadata.created() {
@@ -605,18 +605,20 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         },
     );
 
-    // 内存中的分组逻辑
-    let mut base_groups: HashMap<String, Vec<usize>> = HashMap::new();
+    // 内存中的分组逻辑：按照同种类型大类（安装 vs 归档）分别进行去重判断与代表选择
+    // 如果一个游戏既有安装，又有归档，两者不互为重复。
+    let mut base_groups: HashMap<(String, &'static str), Vec<usize>> = HashMap::new();
     for (idx, game) in raw_scanned.iter().enumerate() {
-        base_groups.entry(game.base_name.clone()).or_insert_with(Vec::new).push(idx);
+        let cat = normalize_dup_type_category(&game.r#type);
+        base_groups.entry((game.base_name.clone(), cat)).or_insert_with(Vec::new).push(idx);
     }
 
-    for (_base_name, idx_list) in base_groups.iter() {
+    for ((_base_name, _cat), idx_list) in &base_groups {
         let is_exact;
         let is_version;
 
         if idx_list.len() > 1 {
-            // 在此 BaseName 组内按 CleanName 分组
+            // 在此 (BaseName, Category) 组内按 CleanName 分组
             let mut clean_groups: HashMap<String, Vec<usize>> = HashMap::new();
             for &idx in idx_list {
                 clean_groups.entry(raw_scanned[idx].clean_name.clone()).or_insert_with(Vec::new).push(idx);
@@ -640,7 +642,7 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
             raw_scanned[idx].is_version_dup = is_version;
         }
 
-        // 选择代表（最短 original_name 长度）
+        // 选择本分类下的代表（最短 original_name 长度）
         let mut best_idx = idx_list[0];
         let mut min_len = raw_scanned[best_idx].original_name.len();
         for &idx in idx_list.iter().skip(1) {
@@ -688,301 +690,24 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         })
         .collect();
 
-    let client = Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
-        .timeout(Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    // 在 exe 所在目录创建 covers 文件夹
-    let mut covers_dir = std::env::current_exe().unwrap_or_default();
-    covers_dir.pop(); // 移除 exe 文件名，保留目录
-    covers_dir.push("covers");
-    let _ = fs::create_dir_all(&covers_dir);
-
     let mut new_steam_entries: i64 = 0;
     let total_new = new_games.len();
 
     if !new_games.is_empty() {
-        
-        let queue: Arc<Mutex<VecDeque<(String, Option<u32>, usize)>>> = Arc::new(Mutex::new(
-            new_games.into_iter().map(|(name, appid)| (name, appid, 0)).collect()
-        ));
-        let throttle_ctrl = Arc::new(Mutex::new(ThrottleController::new(steam_api_threads)));
-        let active_tasks = Arc::new(AtomicUsize::new(0));
-        let covers_dir_arc = Arc::new(covers_dir);
+        let targets: Vec<crate::steam_service::SteamSyncTarget> = new_games
+            .into_iter()
+            .map(|(name, appid)| crate::steam_service::SteamSyncTarget::with_appid(name, appid))
+            .collect();
 
-        enum WorkerMessage {
-            StatusNotification {
-                message: String,
+        let entries_count = crate::steam_service::sync_steam_metadata_blocking(
+            app_handle.clone(),
+            targets,
+            crate::steam_service::ProgressReporter::ScanProgress {
+                step: "query-steam".to_string(),
             },
-            ItemProcessed {
-                base_name: String,
-                entry: Option<crate::steam_service::SteamCacheEntry>,
-                current_concurrency: usize,
-                is_ramping: bool,
-            },
-        }
-
-        let (tx, rx) = std::sync::mpsc::channel::<WorkerMessage>();
-        let mut thread_handles = Vec::new();
-
-        for thread_idx in 0..steam_api_threads {
-            let tx_clone = tx.clone();
-            let queue_clone = Arc::clone(&queue);
-            let cancel_clone = Arc::clone(&cancel_flag);
-            let throttle_ctrl_clone = Arc::clone(&throttle_ctrl);
-            let active_tasks_clone = Arc::clone(&active_tasks);
-            let client_clone = client.clone();
-            let lang = language.clone();
-            let covers_dir_clone = Arc::clone(&covers_dir_arc);
-
-            let handle = std::thread::spawn(move || {
-                loop {
-                    if cancel_clone.load(Ordering::Relaxed) {
-                        break;
-                    }
-
-                    // 检查自适应爬坡（满1分钟 +1 并发）
-                    let (current_threads, is_ramping) = {
-                        let mut ctrl = throttle_ctrl_clone.lock().unwrap();
-                        let ramp_msg = ctrl.check_ramp();
-                        let cur = ctrl.get_current_threads();
-                        let ramping = ctrl.is_ramping();
-                        drop(ctrl);
-                        if let Some((_c, msg)) = ramp_msg {
-                            let _ = tx_clone.send(WorkerMessage::StatusNotification { message: msg });
-                        }
-                        (cur, ramping)
-                    };
-
-                    // 若当前线程号超出当前允许的并发限制，休眠等待
-                    if thread_idx >= current_threads {
-                        let is_done = {
-                            let q = queue_clone.lock().unwrap();
-                            q.is_empty() && active_tasks_clone.load(Ordering::SeqCst) == 0
-                        };
-                        if is_done {
-                            break;
-                        }
-                        std::thread::sleep(Duration::from_millis(500));
-                        continue;
-                    }
-
-                    // 尝试提取下一个待抓取游戏
-                    let task = {
-                        let mut q = queue_clone.lock().unwrap();
-                        q.pop_front()
-                    };
-
-                    let (base_name, detected_appid, retry_count) = match task {
-                        Some(item) => {
-                            active_tasks_clone.fetch_add(1, Ordering::SeqCst);
-                            item
-                        }
-                        None => {
-                            if active_tasks_clone.load(Ordering::SeqCst) > 0 {
-                                std::thread::sleep(Duration::from_millis(100));
-                                continue;
-                            } else {
-                                break;
-                            }
-                        }
-                    };
-
-                    // 根据当前并发保护状态调整请求延迟
-                    let sleep_ms = if is_ramping && current_threads == 1 {
-                        steam_api_delay_ms.max(1000)
-                    } else if is_ramping {
-                        steam_api_delay_ms.max(500)
-                    } else {
-                        steam_api_delay_ms
-                    };
-                    if sleep_ms > 0 {
-                        std::thread::sleep(Duration::from_millis(sleep_ms));
-                    }
-
-                    if cancel_clone.load(Ordering::Relaxed) {
-                        active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
-                        break;
-                    }
-
-                    let (maybe_entry, got_403) = if let Some(app_id) = detected_appid {
-                        let (res, is_403) = crate::steam_service::fetch_steam_game_by_appid_ext(&client_clone, app_id, &base_name, &lang);
-                        if is_403 {
-                            (None, true)
-                        } else if res.is_some() {
-                            (res, false)
-                        } else {
-                            // detected_appid 未命中详情，回退到按名称检索
-                            crate::steam_service::fetch_steam_game_info_ext(&client_clone, &base_name, &lang)
-                        }
-                    } else {
-                        crate::steam_service::fetch_steam_game_info_ext(&client_clone, &base_name, &lang)
-                    };
-
-                    if got_403 {
-                        let notify_msg = {
-                            let mut ctrl = throttle_ctrl_clone.lock().unwrap();
-                            let (_c, msg) = ctrl.on_403(&base_name);
-                            msg
-                        };
-                        let _ = tx_clone.send(WorkerMessage::StatusNotification { message: notify_msg });
-
-                        if retry_count < 2 {
-                            {
-                                let mut q = queue_clone.lock().unwrap();
-                                q.push_back((base_name, detected_appid, retry_count + 1));
-                            }
-                            active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
-                            std::thread::sleep(Duration::from_millis(2000));
-                            continue;
-                        }
-                    }
-
-                    // 封面下载逻辑
-                    let final_entry = if let Some(mut entry) = maybe_entry {
-                        if let Some(app_id) = entry.appid {
-                            let cover_filename = format!("{}.jpg", app_id);
-                            let target_paths = [
-                                covers_dir_clone.join(&cover_filename),
-                                std::path::PathBuf::from("covers").join(&cover_filename),
-                                std::path::PathBuf::from("src-tauri/covers").join(&cover_filename),
-                                std::path::PathBuf::from("../covers").join(&cover_filename),
-                            ];
-
-                            let mut download_success = target_paths.iter().any(|p| p.exists());
-                            if !download_success {
-                                let mut candidates = Vec::new();
-                                if let Some(ref cover_url) = entry.local_cover {
-                                    if cover_url.starts_with("http") {
-                                        candidates.push(cover_url.clone());
-                                    }
-                                }
-                                candidates.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id));
-                                candidates.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900.jpg", app_id));
-                                candidates.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/header.jpg", app_id));
-                                candidates.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/capsule_616x353.jpg", app_id));
-
-                                for url in candidates {
-                                    if let Ok(img_res) = client_clone.get(&url).send() {
-                                        if img_res.status().is_success() {
-                                            if let Ok(img_bytes) = img_res.bytes() {
-                                                if img_bytes.len() > 1024 {
-                                                    for p in &target_paths {
-                                                        if let Some(parent) = p.parent() {
-                                                            let _ = fs::create_dir_all(parent);
-                                                        }
-                                                        let _ = fs::write(p, &img_bytes);
-                                                    }
-                                                    download_success = true;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 只要匹配到了 Steam appid，始终使用本地封面规范路径 covers/{appid}.jpg
-                            entry.local_cover = Some(format!("covers/{}", cover_filename));
-                        }
-                        Some(entry)
-                    } else {
-                        None
-                    };
-
-                    let _ = tx_clone.send(WorkerMessage::ItemProcessed {
-                        base_name,
-                        entry: final_entry,
-                        current_concurrency: current_threads,
-                        is_ramping,
-                    });
-
-                    active_tasks_clone.fetch_sub(1, Ordering::SeqCst);
-                }
-            });
-            thread_handles.push(handle);
-        }
-
-        drop(tx); // drop the original sender
-
-        let mut processed = 0;
-        for msg in rx {
-            if cancel_flag.load(Ordering::Relaxed) {
-                let completed_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                let _ = insert_scan_history(
-                    &conn,
-                    &started_at,
-                    &completed_at,
-                    raw_scanned.len() as i64,
-                    total_new as i64,
-                    new_steam_entries,
-                    "cancelled",
-                );
-                for h in thread_handles {
-                    let _ = h.join();
-                }
-                return Err("扫描已被用户取消".to_string());
-            }
-
-            match msg {
-                WorkerMessage::StatusNotification { message } => {
-                    let _ = app_handle.emit(
-                        "scan-progress",
-                        ProgressEvent {
-                            step: "query-steam".to_string(),
-                            message,
-                            current: processed,
-                            total: total_new,
-                        },
-                    );
-                }
-                WorkerMessage::ItemProcessed { base_name, entry, current_concurrency, is_ramping } => {
-                    processed += 1;
-                    let ramp_tag = if is_ramping {
-                        format!(" [保护恢复中: {}/{}线程]", current_concurrency, steam_api_threads)
-                    } else {
-                        String::new()
-                    };
-                    let _ = app_handle.emit(
-                        "scan-progress",
-                        ProgressEvent {
-                            step: "query-steam".to_string(),
-                            message: format!("正在向 Steam 检索新游戏与评价 ({} / {}){}: {}", processed, total_new, ramp_tag, base_name),
-                            current: processed,
-                            total: total_new,
-                        },
-                    );
-
-                    if let Some(entry) = entry {
-                        if entry.appid.is_some() {
-                            // Retry up to 3 times on database lock errors
-                            for attempt in 0..3 {
-                                match insert_steam_cache_entry(&conn, &entry) {
-                                    Ok(_) => break,
-                                    Err(e) => {
-                                        let err_str = e.to_string();
-                                        if err_str.contains("locked") && attempt < 2 {
-                                            println!("Steam cache insert locked, retrying ({}/3): {}", attempt + 1, base_name);
-                                            std::thread::sleep(Duration::from_millis(300 * (attempt as u64 + 1)));
-                                        } else {
-                                            println!("Error inserting steam cache for {}: {}", base_name, e);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            new_steam_entries += 1;
-                        }
-                    }
-                }
-            }
-        }
-
-        for h in thread_handles {
-            let _ = h.join();
-        }
+            cancel_flag.clone(),
+        )?;
+        new_steam_entries = entries_count as i64;
     }
 
     let _ = app_handle.emit(
@@ -997,6 +722,9 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
 
     // 将所有扫描结果保存到 games 表
     save_scanned_games(&conn, &raw_scanned).map_err(|e| e.to_string())?;
+
+    // 同步 steam_cache 的 AppID、评测及封面元数据至 games 表
+    let _ = crate::db::sync_game_metadata_covers(&conn);
 
     // 记录扫描历史
     let completed_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
@@ -1219,5 +947,47 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(350));
         }
+    }
+
+    #[test]
+    fn test_classify_game_type() {
+        let temp_dir = std::env::temp_dir().join(format!("hoardster_test_classify_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        // 1. 创建包含 exe 文件的目录
+        let game_with_exe = temp_dir.join("GameWithExe");
+        std::fs::create_dir_all(&game_with_exe).unwrap();
+        std::fs::write(game_with_exe.join("game.exe"), b"dummy exe").unwrap();
+
+        // 在安装根路径下：包含 exe => "Installed"
+        assert_eq!(classify_game_type(&game_with_exe, true, false, false), "Installed");
+
+        // 在归档根路径下：即使包含 exe => 必须归属为 "Archive"
+        assert_eq!(classify_game_type(&game_with_exe, true, false, true), "Archive");
+
+        // 2. 创建普通纯资源目录（无 exe，无子目录）
+        let game_empty = temp_dir.join("GameEmpty");
+        std::fs::create_dir_all(&game_empty).unwrap();
+        std::fs::write(game_empty.join("readme.txt"), b"readme").unwrap();
+
+        // 安装根路径下无 exe 无子目录 => "Archive"
+        assert_eq!(classify_game_type(&game_empty, true, false, false), "Archive");
+        // 归档根路径下 => "Archive"
+        assert_eq!(classify_game_type(&game_empty, true, false, true), "Archive");
+
+        // 3. 包含 iso 文件的目录 => 均为 "ISO"
+        let game_with_iso = temp_dir.join("GameWithIso");
+        std::fs::create_dir_all(&game_with_iso).unwrap();
+        std::fs::write(game_with_iso.join("disc.iso"), b"dummy iso").unwrap();
+        assert_eq!(classify_game_type(&game_with_iso, true, false, false), "ISO");
+        assert_eq!(classify_game_type(&game_with_iso, true, false, true), "ISO");
+
+        // 4. 单独的 iso 文件 => "ISO"
+        let standalone_iso = temp_dir.join("standalone.iso");
+        std::fs::write(&standalone_iso, b"dummy iso").unwrap();
+        assert_eq!(classify_game_type(&standalone_iso, false, true, false), "ISO");
+        assert_eq!(classify_game_type(&standalone_iso, false, true, true), "ISO");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

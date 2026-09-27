@@ -116,21 +116,29 @@ pub struct ScanHistoryRecord {
     pub status: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct ScanPathEntry {
+    pub path: String,
+    pub scan_type: String, // "installed" | "archived"
+}
+
 pub fn init_db(conn: &Connection) -> Result<()> {
-    // 1. 扫描路径表
+    // 1. 扫描路径表 (区分安装目录与归档路径)
     conn.execute(
         "CREATE TABLE IF NOT EXISTS scan_paths (
-            path TEXT PRIMARY KEY
+            path TEXT PRIMARY KEY,
+            scan_type TEXT DEFAULT 'installed'
         )",
         [],
     )?;
+    conn.execute("ALTER TABLE scan_paths ADD COLUMN scan_type TEXT DEFAULT 'installed'", []).ok();
 
     // 首次初始化时填充默认扫描路径
     let count: i64 = conn.query_row("SELECT count(*) FROM scan_paths", [], |r| r.get(0))?;
     if count == 0 {
         let defaults = vec!["E:\\Games", "D:\\Games", "I:\\", "K:\\"];
         for path in defaults {
-            let _ = conn.execute("INSERT OR IGNORE INTO scan_paths (path) VALUES (?)", [path]);
+            let _ = conn.execute("INSERT OR IGNORE INTO scan_paths (path, scan_type) VALUES (?, 'installed')", [path]);
         }
     }
 
@@ -428,16 +436,25 @@ pub fn init_db(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn get_scan_paths(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT path FROM scan_paths")?;
+pub fn get_scan_paths(conn: &Connection) -> Result<Vec<ScanPathEntry>> {
+    let mut stmt = conn.prepare("SELECT path, COALESCE(scan_type, 'installed') FROM scan_paths")?;
     let paths = stmt
-        .query_map([], |row| row.get(0))?
-        .collect::<Result<Vec<String>>>()?;
+        .query_map([], |row| {
+            Ok(ScanPathEntry {
+                path: row.get(0)?,
+                scan_type: row.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<ScanPathEntry>>>()?;
     Ok(paths)
 }
 
-pub fn add_scan_path(conn: &Connection, path: &str) -> Result<()> {
-    conn.execute("INSERT OR IGNORE INTO scan_paths (path) VALUES (?)", [path])?;
+pub fn add_scan_path(conn: &Connection, path: &str, scan_type: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO scan_paths (path, scan_type) VALUES (?1, ?2)
+         ON CONFLICT(path) DO UPDATE SET scan_type = excluded.scan_type",
+        params![path, scan_type],
+    )?;
     Ok(())
 }
 
@@ -657,49 +674,14 @@ pub fn delete_game_by_path(conn: &Connection, full_path: &str) -> Result<()> {
     let norm_backslash = full_path.replace('/', "\\");
     let norm_forward = full_path.replace('\\', "/");
 
-    // 检查被删除的游戏是否是代表游戏，以及获取其 base_name
-    let base_name: Option<String> = conn
-        .query_row(
-            "SELECT base_name FROM games WHERE (full_path = ?1 OR full_path = ?2 OR full_path = ?3) AND is_representative = 1",
-            params![full_path, &norm_backslash, &norm_forward],
-            |r| r.get(0),
-        )
-        .ok();
-
     // 从 games 表删除记录
     conn.execute(
         "DELETE FROM games WHERE full_path = ?1 OR full_path = ?2 OR full_path = ?3",
         params![full_path, &norm_backslash, &norm_forward],
     )?;
 
-    // 如果被删除的是代表游戏，且同组 base_name 下还有其他游戏版本，更新同组游戏的代表状态
-    if let Some(base) = base_name {
-        let remaining_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM games WHERE base_name = ?",
-                [&base],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-
-        if remaining_count == 1 {
-            let _ = conn.execute(
-                "UPDATE games SET is_representative = 1, is_exact_dup = 0, is_version_dup = 0 WHERE base_name = ?",
-                [&base],
-            );
-        } else if remaining_count > 1 {
-            let next_id: Option<i64> = conn
-                .query_row(
-                    "SELECT id FROM games WHERE base_name = ? ORDER BY length(original_name) ASC LIMIT 1",
-                    [&base],
-                    |r| r.get(0),
-                )
-                .ok();
-            if let Some(nid) = next_id {
-                let _ = conn.execute("UPDATE games SET is_representative = 1 WHERE id = ?", [nid]);
-            }
-        }
-    }
+    // 重新计算全库的去重状态与代表版本（严格遵循同类型分类隔离规则）
+    let _ = recalculate_existing_games(conn);
 
     Ok(())
 }
@@ -880,11 +862,11 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
             clean_name: row.get(2)?,
             base_name: row.get(3)?,
             r#type: row.get(4)?,
-            source_path: row.get(5)?,
+            source_path: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
             full_path: row.get(6)?,
-            size: row.get(7)?,
-            size_bytes: row.get(8)?,
-            created: row.get(9)?,
+            size: row.get::<_, Option<String>>(7)?.unwrap_or_default(),
+            size_bytes: row.get::<_, Option<i64>>(8)?.unwrap_or(0),
+            created: row.get::<_, Option<String>>(9)?.unwrap_or_default(),
             is_exact_dup: row.get::<_, i32>(10)? != 0,
             is_version_dup: row.get::<_, i32>(11)? != 0,
             is_representative: row.get::<_, i32>(12)? != 0,
@@ -907,12 +889,13 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
 
     for r in rows {
         let game = r?;
+        let cat = crate::scanner::normalize_dup_type_category(&game.r#type);
         let key = if dup_type == "exact" {
-            // 完全重复按 CleanName 分组
-            game.clean_name.clone()
+            // 完全重复按 CleanName + Category 分组
+            format!("{}:::{}", game.clean_name, cat)
         } else {
-            // 版本重复按 BaseName 分组
-            game.base_name.clone()
+            // 版本重复按 BaseName + Category 分组
+            format!("{}:::{}", game.base_name, cat)
         };
 
         if !grouped.contains_key(&key) {
@@ -924,16 +907,19 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
     let mut result = Vec::new();
     for key in order {
         if let Some(games) = grouped.get(&key) {
-            // 使用第一个条目的 base_name 或 original_name 作为分组标题
-            let title = if dup_type == "exact" {
-                games[0].original_name.clone()
-            } else {
-                key.to_uppercase()
-            };
-            result.push(DuplicateGroup {
-                name: title,
-                games: games.clone(),
-            });
+            if games.len() > 1 {
+                // 使用第一个条目的 original_name 或 base_name 作为分组标题
+                let title = if dup_type == "exact" {
+                    games[0].original_name.clone()
+                } else {
+                    let base = key.split(":::").next().unwrap_or(&key);
+                    base.to_uppercase()
+                };
+                result.push(DuplicateGroup {
+                    name: title,
+                    games: games.clone(),
+                });
+            }
         }
     }
 
@@ -1446,14 +1432,16 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
         id: i64,
         original_name: String,
         old_base: String,
+        r#type: String,
     }
 
-    let mut stmt = conn.prepare("SELECT id, original_name, base_name FROM games")?;
+    let mut stmt = conn.prepare("SELECT id, original_name, base_name, type FROM games")?;
     let games: Vec<RawGame> = stmt.query_map([], |row| {
         Ok(RawGame {
             id: row.get(0)?,
             original_name: row.get(1)?,
             old_base: row.get(2)?,
+            r#type: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
         })
     })?.filter_map(|r| r.ok()).collect();
     drop(stmt);
@@ -1468,6 +1456,7 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
         clean_name: String,
         base_name: String,
         old_base: String,
+        r#type: String,
         is_exact_dup: bool,
         is_version_dup: bool,
         is_representative: bool,
@@ -1484,6 +1473,7 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
             clean_name: clean,
             base_name: base,
             old_base: g.old_base,
+            r#type: g.r#type,
             is_exact_dup: false,
             is_version_dup: false,
             is_representative: false,
@@ -1491,12 +1481,14 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
         }
     }).collect();
 
-    let mut base_groups: HashMap<String, Vec<usize>> = HashMap::new();
+    // 按照同种类型大类（安装 vs 归档）分别进行去重判断与代表选择
+    let mut base_groups: HashMap<(String, &'static str), Vec<usize>> = HashMap::new();
     for (idx, g) in processed.iter().enumerate() {
-        base_groups.entry(g.base_name.clone()).or_insert_with(Vec::new).push(idx);
+        let cat = crate::scanner::normalize_dup_type_category(&g.r#type);
+        base_groups.entry((g.base_name.clone(), cat)).or_insert_with(Vec::new).push(idx);
     }
 
-    for (_base, idx_list) in &base_groups {
+    for ((_base, _cat), idx_list) in &base_groups {
         let is_exact;
         let is_version;
 
@@ -1564,6 +1556,19 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
     drop(update_stmt);
 
     let total_updated = processed.len();
+
+    // 同步根据 scan_paths 的 scan_type 校验已有游戏的分类
+    // 若所属 source_path 为 archived，且当前类型为 Installed，自动修正为 Archive
+    if let Ok(scan_paths) = get_scan_paths(conn) {
+        for entry in scan_paths {
+            if entry.scan_type == "archived" {
+                let _ = conn.execute(
+                    "UPDATE games SET type = 'Archive' WHERE (source_path = ?1 OR source_path LIKE ?2) AND type = 'Installed'",
+                    params![entry.path, format!("{}%", entry.path)],
+                );
+            }
+        }
+    }
 
     // 清理 steam_cache 中违反续作兼容性或误匹配为辅助内容 (Soundtrack/DLC/文化包等) 的错误缓存记录
     // 注意：用户手工映射的记录 (is_manual = 1) 视为用户明确意图，绝对严禁自动清理！
@@ -1704,5 +1709,129 @@ mod tests {
 
         let bad_exists: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM steam_db.steam_cache WHERE base_name = 'game 2')", [], |r| r.get(0)).unwrap();
         assert!(!bad_exists, "Bad auto-match must be purged!");
+    }
+
+    #[test]
+    fn test_duplicate_judgment_by_type_category() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE games (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_name TEXT,
+                clean_name TEXT,
+                base_name TEXT,
+                type TEXT,
+                source_path TEXT,
+                full_path TEXT UNIQUE,
+                size TEXT,
+                size_bytes INTEGER,
+                created TEXT,
+                is_exact_dup INTEGER DEFAULT 0,
+                is_version_dup INTEGER DEFAULT 0,
+                is_representative INTEGER DEFAULT 0
+            )",
+            [],
+        ).unwrap();
+        conn.execute("ATTACH DATABASE ':memory:' AS steam_db", []).unwrap();
+        conn.execute(
+            "CREATE TABLE steam_db.steam_cache (
+                base_name TEXT PRIMARY KEY,
+                appid INTEGER,
+                name TEXT,
+                local_cover TEXT,
+                review_score_desc INTEGER,
+                positive_percent INTEGER,
+                total_reviews INTEGER,
+                recent_review_score_desc INTEGER,
+                recent_positive_percent INTEGER,
+                release_date TEXT,
+                last_updated TEXT,
+                genres TEXT,
+                is_manual INTEGER DEFAULT 0
+            )",
+            [],
+        ).unwrap();
+
+        // 场景 1：Hades 既有安装又有归档 => 互不视为重复
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, type, source_path, full_path) VALUES (?, ?, ?, ?, ?, ?)",
+            params!["Hades", "hades", "hades", "Installed", "D:\\Games", "D:\\Games\\Hades"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, type, source_path, full_path) VALUES (?, ?, ?, ?, ?, ?)",
+            params!["Hades", "hades", "hades", "Archive", "E:\\Archive", "E:\\Archive\\Hades.iso"],
+        ).unwrap();
+
+        // 场景 2：Dead Cells 安装目录下有两份不同版本，归档路径下有一份备份
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, type, source_path, full_path) VALUES (?, ?, ?, ?, ?, ?)",
+            params!["Dead Cells v1", "dead cells v1", "dead cells", "Installed", "D:\\Games", "D:\\Games\\DeadCells_v1"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, type, source_path, full_path) VALUES (?, ?, ?, ?, ?, ?)",
+            params!["Dead Cells v2", "dead cells v2", "dead cells", "Installed", "D:\\Games", "D:\\Games\\DeadCells_v2"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, type, source_path, full_path) VALUES (?, ?, ?, ?, ?, ?)",
+            params!["Dead Cells Backup", "dead cells backup", "dead cells", "Archive", "E:\\Archive", "E:\\Archive\\DeadCells"],
+        ).unwrap();
+
+        let recalc = recalculate_existing_games(&conn);
+        assert!(recalc.is_ok());
+
+        // 检验 Hades：安装与归档两者均不应为重复
+        let hades_installed_dup: (i32, i32) = conn.query_row(
+            "SELECT is_exact_dup, is_version_dup FROM games WHERE full_path = 'D:\\Games\\Hades'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(hades_installed_dup, (0, 0), "Hades (安装) 不应被视为重复");
+
+        let hades_archived_dup: (i32, i32) = conn.query_row(
+            "SELECT is_exact_dup, is_version_dup FROM games WHERE full_path = 'E:\\Archive\\Hades.iso'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(hades_archived_dup, (0, 0), "Hades (归档) 不应被视为重复");
+
+        // 检验 Dead Cells：两份安装互为版本重复，归档备份独立不算重复
+        let dc1_dup: (i32, i32) = conn.query_row(
+            "SELECT is_exact_dup, is_version_dup FROM games WHERE full_path = 'D:\\Games\\DeadCells_v1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(dc1_dup, (0, 1), "Dead Cells v1 应被标记为版本重复");
+
+        let dc2_dup: (i32, i32) = conn.query_row(
+            "SELECT is_exact_dup, is_version_dup FROM games WHERE full_path = 'D:\\Games\\DeadCells_v2'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(dc2_dup, (0, 1), "Dead Cells v2 应被标记为版本重复");
+
+        let dc_backup_dup: (i32, i32) = conn.query_row(
+            "SELECT is_exact_dup, is_version_dup FROM games WHERE full_path = 'E:\\Archive\\DeadCells'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(dc_backup_dup, (0, 0), "Dead Cells (归档备份) 不应被标记为重复");
+
+        // 检验 get_duplicates 输出
+        let version_groups = get_duplicates(&conn, "version").unwrap();
+        assert_eq!(version_groups.len(), 1, "版本重复组应仅有 Dead Cells");
+        assert_eq!(version_groups[0].games.len(), 2, "Dead Cells 重复组内应仅包含两份安装版本");
+        assert!(version_groups[0].games.iter().all(|g| g.r#type == "Installed"));
+
+        // 测试删除其中一份重复项 (Dead Cells v1) 后，去重状态与重复列表自动更新
+        delete_game_by_path(&conn, "D:\\Games\\DeadCells_v1").unwrap();
+        let dc2_after: (i32, i32, i32) = conn.query_row(
+            "SELECT is_exact_dup, is_version_dup, is_representative FROM games WHERE full_path = 'D:\\Games\\DeadCells_v2'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(dc2_after, (0, 0, 1), "删除 v1 后，残留的 v2 应该自动转为非重复代表版本");
+
+        let version_groups_after = get_duplicates(&conn, "version").unwrap();
+        assert_eq!(version_groups_after.len(), 0, "删除多余版本后，版本重复列表中不再包含 Dead Cells");
     }
 }
