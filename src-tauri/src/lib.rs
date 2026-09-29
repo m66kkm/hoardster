@@ -183,9 +183,9 @@ async fn resync_all_steam_metadata_command(
     let res = tokio::task::spawn_blocking(move || -> Result<usize, String> {
         let conn = crate::db::get_connection().map_err(|e| e.to_string())?;
 
-        // 1. 获取本地数据库中所有游戏的代表 base_name，并关联已存在的 detected_appid
+        // 1. 获取本地数据库中所有游戏的代表 base_name，优先保留手工锁定或本地文件确定的 appid
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT g.base_name, s.appid 
+            "SELECT DISTINCT g.base_name, g.full_path, s.appid, s.is_manual 
              FROM games g 
              LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
              WHERE g.base_name IS NOT NULL AND g.base_name != ''
@@ -195,12 +195,32 @@ async fn resync_all_steam_metadata_command(
         let mut targets_map: std::collections::BTreeMap<String, Option<u32>> = std::collections::BTreeMap::new();
         let rows = stmt.query_map([], |row| {
             let b: String = row.get(0)?;
-            let a: Option<i64> = row.get(1)?;
-            Ok((b, a.and_then(|id| if id > 0 { Some(id as u32) } else { None })))
+            let p: String = row.get(1)?;
+            let a: Option<i64> = row.get(2)?;
+            let is_manual: Option<i64> = row.get(3)?;
+            Ok((b, p, a, is_manual))
         }).map_err(|e| e.to_string())?;
 
         for r in rows.filter_map(|r| r.ok()) {
-            targets_map.entry(r.0).or_insert(r.1);
+            let (base_name, full_path, appid_opt, is_manual_opt) = r;
+            targets_map.entry(base_name).or_insert_with(|| {
+                // 如果是用户手工指定的 AppID，必须予以保留
+                if is_manual_opt == Some(1) {
+                    if let Some(id) = appid_opt {
+                        if id > 0 {
+                            return Some(id as u32);
+                        }
+                    }
+                }
+                // 否则检查本地游戏目录中是否存在权威 steam_appid.txt / steam_api.ini 配置文件
+                let path = std::path::Path::new(&full_path);
+                if path.is_dir() {
+                    if let Some(local_id) = crate::scanner::detect_steam_appid_from_game_dir(path) {
+                        return Some(local_id);
+                    }
+                }
+                None
+            });
         }
         drop(stmt);
 

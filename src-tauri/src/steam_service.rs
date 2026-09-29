@@ -1703,5 +1703,30 @@ mod tests {
         assert_eq!(entry.appid, Some(1245620), "DLC 搜索结果应重定向为主体游戏 AppID 1245620");
         assert_eq!(entry.name.as_deref(), Some("ELDEN RING"));
     }
+
+    #[test]
+    #[ignore]
+    fn test_fetch_steam_game_mhw_iceborne() {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap();
+        // 搜索词为 "monster hunter world iceborne"，命中 1118010 (DLC)，应自动追溯重定向至主体游戏 582010 (Monster Hunter: World)
+        let (entry_opt, _) = fetch_steam_game_info_ext(&client, "monster hunter world iceborne", "schinese");
+        assert!(entry_opt.is_some());
+        let entry = entry_opt.unwrap();
+        println!("MHW result: appid={:?}, name={:?}, positive_percent={:?}, review_score_desc={:?}", entry.appid, entry.name, entry.positive_percent, entry.review_score_desc);
+        assert_eq!(entry.appid, Some(582010), "DLC 搜索结果应重定向为主体游戏 AppID 582010");
+
+        // 若直接根据旧的 AppID 1118010 重新获取，也应自动追溯重定向至 582010
+        let (entry_appid_opt, _) = fetch_steam_game_by_appid_ext(&client, 1118010, "monster hunter world iceborne", "schinese");
+        assert!(entry_appid_opt.is_some());
+        let entry_appid = entry_appid_opt.unwrap();
+        println!("MHW by appid result: appid={:?}, name={:?}, positive_percent={:?}, review_score_desc={:?}", entry_appid.appid, entry_appid.name, entry_appid.positive_percent, entry_appid.review_score_desc);
+        assert_eq!(entry_appid.appid, Some(582010), "AppID 1118010 应自动重定向至主体游戏 582010");
+        assert_eq!(entry_appid.review_score_desc, Some(8));
+        assert_eq!(entry_appid.positive_percent, Some(88));
+    }
 }
 
