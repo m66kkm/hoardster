@@ -181,6 +181,7 @@ export default function CommonPosterCard({
       onClick={onClick}
       onContextMenu={onContextMenu}
       title={tooltip || title}
+      style={{ cursor: onClick ? "pointer" : "default" }}
     >
       {/* Steam 评价角标浮层 */}
       {hasRating && (

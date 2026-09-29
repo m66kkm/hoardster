@@ -53,7 +53,6 @@ function DuplicateGroupItem({
             game={activeGame || group.games[0]}
             onOpenFolder={openGameFolder}
             onContextMenu={onContextMenu}
-            hideLocation={true}
           />
         </div>
 
