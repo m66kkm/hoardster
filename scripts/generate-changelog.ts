@@ -53,7 +53,7 @@ export function generateChangelog(argTarget?: string): string {
   let targetRef = "";
   let displayTarget = "";
 
-  const arg = argTarget || process.argv[2];
+  const arg = argTarget;
 
   if (arg && arg.includes("..")) {
     const [b, t] = arg.split("..");
@@ -145,27 +145,76 @@ export function generateChangelog(argTarget?: string): string {
     }
   }
 
-  let changelog = "";
+  const featCount = categories.feat.items.length;
+  const fixCount = categories.fix.items.length;
+  const perfCount = categories.perf.items.length;
+  const refactorCount = categories.refactor.items.length;
+
+  let summaryParts: string[] = [];
+  if (featCount > 0) summaryParts.push(`${featCount} 项新特性`);
+  if (fixCount > 0) summaryParts.push(`${fixCount} 项问题修复`);
+  if (perfCount > 0) summaryParts.push(`${perfCount} 项体验优化`);
+  if (refactorCount > 0) summaryParts.push(`${refactorCount} 项代码重构`);
+  if (summaryParts.length === 0) summaryParts.push("系统维护与优化");
+
+  const summaryText = `本次更新主要包含 ${summaryParts.join("、")}，进一步提升应用稳定性与操作体验。`;
+
+  let changelog = `## 🎮 Hoardster ${displayTarget}\n\n`;
+  changelog += `> [!NOTE]\n`;
+  changelog += `> **版本概要**：${summaryText}\n\n`;
+  changelog += `---\n\n`;
+
   for (const key of Object.keys(categories)) {
     const cat = categories[key];
     if (cat.items.length > 0) {
-      changelog += `### ${cat.title}\n\n${cat.items.join("\n")}\n\n`;
+      changelog += `### ${cat.title}\n\n`;
+      changelog += `${cat.items.join("\n")}\n\n`;
+      changelog += `---\n\n`;
     }
   }
 
   if (otherItems.length > 0) {
-    changelog += `### 📦 **其他变更 (Other Changes)**\n\n${otherItems.join("\n")}\n\n`;
+    changelog += `### 📦 **其他变更 (Other Changes)**\n\n`;
+    changelog += `${otherItems.join("\n")}\n\n`;
+    changelog += `---\n\n`;
   }
 
+  const cleanVer = displayTarget.replace(/^v/, "");
+  changelog += `### 📦 **安装包与产物说明 (Downloads)**\n\n`;
+  changelog += `| 产物文件名 | 适配平台 | 说明 |\n`;
+  changelog += `| :--- | :--- | :--- |\n`;
+  changelog += `| \`Hoardster_${cleanVer}_x64-setup.exe\` | Windows 64-bit | Windows 桌面版标准安装包 (推荐直接下载安装) |\n\n`;
+  changelog += `---\n\n`;
+
   if (baseTag) {
-    changelog += `**Full Changelog**: https://github.com/${repo}/compare/${baseTag}...${displayTarget}\n`;
+    changelog += `🔍 **完整更新比对 (Full Changelog)**: [\`${baseTag}...${displayTarget}\`](https://github.com/${repo}/compare/${baseTag}...${displayTarget})\n`;
   }
 
   return changelog.trim();
 }
 
-const changelog = generateChangelog();
-console.log(changelog);
+// Parse CLI args
+let outFile = "";
+const args = process.argv.slice(2);
+let targetArg = "";
+
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === "--out" && i + 1 < args.length) {
+    outFile = args[i + 1];
+    i++;
+  } else if (!targetArg && !args[i].startsWith("-")) {
+    targetArg = args[i];
+  }
+}
+
+const changelog = generateChangelog(targetArg);
+
+if (outFile) {
+  fs.writeFileSync(outFile, changelog, "utf-8");
+  console.log(`Changelog written to ${outFile}`);
+} else {
+  console.log(changelog);
+}
 
 // If running in GitHub Actions, write output to GITHUB_OUTPUT
 if (process.env.GITHUB_OUTPUT) {
