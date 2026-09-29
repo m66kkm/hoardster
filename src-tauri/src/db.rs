@@ -226,6 +226,16 @@ pub fn init_db(conn: &Connection) -> Result<()> {
         let _ = conn.execute("INSERT OR REPLACE INTO config (key, value) VALUES ('generic_matching_v1', '1')", []);
     }
 
+    // 自动校准全库中因多线程并发导致大小为 0 的游戏目录
+    let zero_count: i64 = conn.query_row(
+        "SELECT count(*) FROM games WHERE size_bytes IS NULL OR size_bytes <= 0 OR size = '0 B'",
+        [],
+        |r| r.get(0)
+    ).unwrap_or(0);
+    if zero_count > 0 {
+        let _ = calibrate_missing_game_sizes(conn);
+    }
+
     // 5. 扫描历史表
     conn.execute(
         "CREATE TABLE IF NOT EXISTS scan_history (
@@ -1589,7 +1599,52 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
         let _ = conn.execute("DELETE FROM steam_db.steam_cache WHERE base_name = ? AND (is_manual IS NULL OR is_manual = 0)", [key]);
     }
 
+    // 自动校准此前因多线程并发导致大小为 0 的游戏目录
+    let _ = calibrate_missing_game_sizes(conn);
+
     Ok((total_updated, base_changed_count, purged_cache_count))
+}
+
+/// 校准全库中大小为 0 或缺失的游戏（特别是目录型游戏）。
+/// 解决此前因多线程并发导致目录大小未正确计算的问题。
+pub fn calibrate_missing_game_sizes(conn: &Connection) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT id, full_path, type FROM games WHERE size_bytes IS NULL OR size_bytes <= 0 OR size = '0 B' OR size IS NULL"
+    )?;
+    let missing: Vec<(i64, String, String)> = stmt.query_map([], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get::<_, Option<String>>(2)?.unwrap_or_default()))
+    })?.filter_map(|r| r.ok()).collect();
+    drop(stmt);
+
+    if missing.is_empty() {
+        return Ok(0);
+    }
+
+    let mut update_stmt = conn.prepare("UPDATE games SET size = ?, size_bytes = ? WHERE id = ?")?;
+    let mut updated_count = 0;
+
+    for (id, full_path, _) in missing {
+        let p = std::path::Path::new(&full_path);
+        if !p.exists() {
+            continue;
+        }
+
+        let size_bytes = if p.is_dir() {
+            crate::scanner::get_dir_size(p)
+        } else if let Ok(meta) = p.metadata() {
+            meta.len()
+        } else {
+            0
+        };
+
+        if size_bytes > 0 {
+            let size_str = crate::scanner::format_size(size_bytes);
+            let _ = update_stmt.execute(params![size_str, size_bytes as i64, id]);
+            updated_count += 1;
+        }
+    }
+
+    Ok(updated_count)
 }
 
 #[cfg(test)]
@@ -1838,5 +1893,54 @@ mod tests {
             |r| Ok((r.get(0)?, r.get(1)?)),
         ).unwrap();
         assert_eq!(dc2_after, (0, 0), "删除 v1 后，残留的 v2 应该自动解除重复标记");
+    }
+
+    #[test]
+    fn test_calibrate_missing_game_sizes() {
+        let temp_dir = std::env::temp_dir().join("test_calibrate_sizes_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let game_dir = temp_dir.join("GameFolder");
+        std::fs::create_dir_all(&game_dir).unwrap();
+        std::fs::write(game_dir.join("game.exe"), b"1234567890").unwrap();
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE games (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_name TEXT,
+                clean_name TEXT,
+                base_name TEXT,
+                type TEXT,
+                source_path TEXT,
+                full_path TEXT UNIQUE,
+                size TEXT,
+                size_bytes INTEGER,
+                created TEXT,
+                is_exact_dup INTEGER DEFAULT 0,
+                is_version_dup INTEGER DEFAULT 0,
+                is_representative INTEGER DEFAULT 0
+            )",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, type, source_path, full_path, size, size_bytes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params!["Game Folder", "GameFolder", "gamefolder", "Installed", temp_dir.to_str().unwrap(), game_dir.to_str().unwrap(), "0 B", 0],
+        ).unwrap();
+
+        let updated = calibrate_missing_game_sizes(&conn).unwrap();
+        assert_eq!(updated, 1);
+
+        let (size, size_bytes): (String, i64) = conn.query_row(
+            "SELECT size, size_bytes FROM games WHERE full_path = ?",
+            [game_dir.to_str().unwrap()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+
+        assert_eq!(size_bytes, 10);
+        assert_eq!(size, "10 B");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

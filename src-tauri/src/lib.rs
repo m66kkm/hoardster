@@ -511,13 +511,21 @@ async fn delete_game_directory_command(
         if target.exists() {
             if target.is_dir() {
                 // 先尝试递归清除可能存在的只读属性
-                for entry in jwalk::WalkDir::new(target).skip_hidden(false) {
-                    if let Ok(entry) = entry {
-                        if let Ok(metadata) = entry.metadata() {
-                            let mut permissions = metadata.permissions();
-                            if permissions.readonly() {
-                                permissions.set_readonly(false);
-                                let _ = std::fs::set_permissions(entry.path(), permissions);
+                let mut stack = vec![target.to_path_buf()];
+                while let Some(dir) = stack.pop() {
+                    if let Ok(entries) = std::fs::read_dir(&dir) {
+                        for entry in entries.flatten() {
+                            if let Ok(ft) = entry.file_type() {
+                                if ft.is_dir() {
+                                    stack.push(entry.path());
+                                }
+                            }
+                            if let Ok(metadata) = entry.metadata() {
+                                let mut permissions = metadata.permissions();
+                                if permissions.readonly() {
+                                    permissions.set_readonly(false);
+                                    let _ = std::fs::set_permissions(entry.path(), permissions);
+                                }
                             }
                         }
                     }

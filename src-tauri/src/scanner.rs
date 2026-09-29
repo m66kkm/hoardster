@@ -131,17 +131,28 @@ pub fn base_game_name(name: &str) -> String {
     clean.trim().to_string()
 }
 
-use jwalk::WalkDir;
+/// 计算目录的总大小（字节数）。
+/// 使用基于 std::fs::read_dir 的栈式深度优先遍历，
+/// 规避外部并行库 (如 jwalk) 在 Rayon 并行迭代中引发的线程池饥饿/死锁问题，
+/// 且在 Windows 上复用 FindFirstFileW/FindNextFileW 的文件元数据，性能极高。
+pub fn get_dir_size<P: AsRef<Path>>(path: P) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.as_ref().to_path_buf()];
 
-fn get_dir_size<P: AsRef<Path>>(path: P) -> u64 {
-    WalkDir::new(path)
-        .skip_hidden(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| !e.file_type().is_dir())
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.len())
-        .sum()
+    while let Some(current_dir) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&current_dir) {
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_dir() {
+                        stack.push(entry.path());
+                    } else if let Ok(meta) = entry.metadata() {
+                        total += meta.len();
+                    }
+                }
+            }
+        }
+    }
+    total
 }
 
 const PRUNE_DIRS: &[&str] = &[
@@ -406,7 +417,7 @@ fn has_nested_iso<P: AsRef<Path>>(path: P, max_depth: usize) -> bool {
     false
 }
 
-fn format_size(bytes: u64) -> String {
+pub fn format_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 * 1024 {
         format!("{:.2} TB", bytes as f64 / (1024.0 * 1024.0 * 1024.0 * 1024.0))
     } else if bytes >= 1024 * 1024 * 1024 {
@@ -958,6 +969,21 @@ mod tests {
         assert_eq!(classify_game_type(&standalone_iso, false, true, false), "ISO");
         assert_eq!(classify_game_type(&standalone_iso, false, true, true), "ISO");
 
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_get_dir_size() {
+        let temp_dir = std::env::temp_dir().join("test_get_dir_size_dir");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        std::fs::write(temp_dir.join("file1.txt"), b"12345").unwrap();
+        let sub = temp_dir.join("subdir");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("file2.txt"), b"1234567890").unwrap();
+
+        let size = get_dir_size(&temp_dir);
+        assert_eq!(size, 15);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
