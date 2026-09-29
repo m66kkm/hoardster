@@ -379,6 +379,124 @@ pub fn extract_steam_app_data(det_json: &Value, app_id: u32) -> Option<&Value> {
     None
 }
 
+/// 获取指定 AppID 的 Steam 详情数据（兼顾 cc=US 与原生语言，以及 403 限流检测）
+pub fn fetch_steam_app_details(client: &Client, app_id: u32, lang: &str) -> (Option<Value>, bool) {
+    let mut got_403 = false;
+    for cc_param in &["&cc=US", ""] {
+        let details_url = format!(
+            "https://store.steampowered.com/api/appdetails?appids={}&filters=basic,release_date,genres&l={}{}",
+            app_id, lang, cc_param
+        );
+        match client.get(&details_url).send() {
+            Ok(det_res) => {
+                if det_res.status() == reqwest::StatusCode::FORBIDDEN || det_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                    got_403 = true;
+                    break;
+                }
+                if det_res.status().is_success() {
+                    if let Ok(det_json) = det_res.json::<Value>() {
+                        if let Some(d) = extract_steam_app_data(&det_json, app_id) {
+                            return (Some(d.clone()), false);
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    (None, got_403)
+}
+
+/// 若当前 Steam App 是 DLC、附加内容包、原声集或试玩版，从 appdetails 中提取其主体游戏（Base Game / Full Game）的 AppID 和名称
+pub fn extract_parent_app_info(app_data: &Value) -> Option<(u32, Option<String>)> {
+    // 1. 优先提取 fullgame 字段 (Steam 官方标准的 DLC/附加包主体游戏结构: "fullgame": { "appid": "12345", "name": "..." })
+    if let Some(fullgame) = app_data.get("fullgame") {
+        let parent_name = fullgame.get("name").and_then(|n| n.as_str()).map(|s| s.to_string());
+        if let Some(id_val) = fullgame.get("appid") {
+            let parsed_id = if let Some(id_str) = id_val.as_str() {
+                id_str.parse::<u32>().ok()
+            } else if let Some(id_num) = id_val.as_u64() {
+                Some(id_num as u32)
+            } else if let Some(id_num) = id_val.as_i64() {
+                Some(id_num as u32)
+            } else {
+                None
+            };
+            if let Some(pid) = parsed_id {
+                if pid > 0 {
+                    return Some((pid, parent_name));
+                }
+            }
+        }
+    }
+
+    // 2. 检查 type 字段（若为 dlc、music、demo 等附加包类型）是否有备用父级键
+    let app_type = app_data.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    if app_type == "dlc" || app_type == "music" || app_type == "demo" {
+        for key in &["parent_appid", "base_appid", "root_appid"] {
+            if let Some(id_val) = app_data.get(*key) {
+                let parsed_id = if let Some(id_str) = id_val.as_str() {
+                    id_str.parse::<u32>().ok()
+                } else if let Some(id_num) = id_val.as_u64() {
+                    Some(id_num as u32)
+                } else if let Some(id_num) = id_val.as_i64() {
+                    Some(id_num as u32)
+                } else {
+                    None
+                };
+                if let Some(pid) = parsed_id {
+                    if pid > 0 {
+                        return Some((pid, None));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// 解析可能为 DLC/附加包的 App 数据：若为 DLC 则层层追溯解析至主体游戏（最多追溯 3 层防死循环）
+pub fn resolve_to_base_game(
+    client: &Client,
+    mut app_id: u32,
+    mut app_data: Value,
+    lang: &str,
+) -> (u32, Value, bool) {
+    let mut got_403 = false;
+    let mut depth = 0;
+
+    while depth < 3 {
+        if let Some((parent_id, parent_name_fallback)) = extract_parent_app_info(&app_data) {
+            if parent_id != app_id && parent_id > 0 {
+                let (parent_data_opt, is_403) = fetch_steam_app_details(client, parent_id, lang);
+                if is_403 {
+                    got_403 = true;
+                }
+                if let Some(parent_data) = parent_data_opt {
+                    app_id = parent_id;
+                    app_data = parent_data;
+                    depth += 1;
+                    continue;
+                } else {
+                    // 若网络受限未能抓取主体游戏全部数据，但已知主体游戏 AppID 与名称，修正当前 ID 与名称
+                    app_id = parent_id;
+                    if let Some(name) = parent_name_fallback {
+                        if let Some(obj) = app_data.as_object_mut() {
+                            obj.insert("name".to_string(), Value::String(name));
+                            obj.insert("steam_appid".to_string(), Value::Number(parent_id.into()));
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        break;
+    }
+
+    (app_id, app_data, got_403)
+}
+
 /// 独立的 Steam 游戏信息获取服务接口（返回结果与是否触发403/429频控标识）
 pub fn fetch_steam_game_info_ext(client: &Client, base_name: &str, lang: &str) -> (Option<SteamCacheEntry>, bool) {
     let mut got_403 = false;
@@ -538,78 +656,107 @@ pub fn fetch_steam_game_info_ext(client: &Client, base_name: &str, lang: &str) -
     }
 
     // 若依然未找到匹配游戏，直接返回
-    let (app_id, app_name, tiny_image) = match app_info {
+    let (mut app_id, mut app_name, tiny_image) = match app_info {
         Some(info) => info,
         None => return (None, got_403),
     };
 
+    let original_app_id = app_id;
+
+    // 先拉取当前匹配 AppID 的详情并排查 DLC/附加包重定向
+    let (initial_data_opt, det_403) = fetch_steam_app_details(client, app_id as u32, lang);
+    if det_403 {
+        got_403 = true;
+    }
+
+    let (final_app_id, app_data_opt) = if let Some(initial_data) = initial_data_opt {
+        // 若当前结果是 DLC 或附加包，追溯至主体游戏
+        let (resolved_id, resolved_data, resolve_403) = resolve_to_base_game(client, app_id as u32, initial_data, lang);
+        if resolve_403 {
+            got_403 = true;
+        }
+        (resolved_id as i64, Some(resolved_data))
+    } else {
+        (app_id, None)
+    };
+
+    app_id = final_app_id;
+    if let Some(ref data) = app_data_opt {
+        if let Some(n) = data.get("name").and_then(|n| n.as_str()) {
+            app_name = n.to_string();
+        }
+    }
+
     entry.appid = Some(app_id);
     entry.name = Some(app_name);
 
-    // 解析封面图 URL
+    // 解析封面图 URL（如果已重定向为主体游戏，优先使用主体游戏的封面）
+    let is_redirected = app_id != original_app_id;
     let mut best_cover_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id);
-    if let Some(apps_idx) = tiny_image.find(&format!("/apps/{}/", app_id)) {
-        let remainder = &tiny_image[apps_idx + format!("/apps/{}/", app_id).len()..];
-        if let Some(slash_idx) = remainder.find('/') {
-            let hash = &remainder[..slash_idx];
-            let hash_library_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/{}/library_600x900_2x.jpg", app_id, hash);
-            if let Ok(res) = client.head(&hash_library_url).send() {
-                if res.status().is_success() {
-                    best_cover_url = hash_library_url;
-                } else if let Ok(res2) = client.head(&best_cover_url).send() {
-                    if !res2.status().is_success() && !tiny_image.is_empty() {
-                        best_cover_url = tiny_image.clone();
+    if !is_redirected {
+        if let Some(apps_idx) = tiny_image.find(&format!("/apps/{}/", app_id)) {
+            let remainder = &tiny_image[apps_idx + format!("/apps/{}/", app_id).len()..];
+            if let Some(slash_idx) = remainder.find('/') {
+                let hash = &remainder[..slash_idx];
+                let hash_library_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/{}/library_600x900_2x.jpg", app_id, hash);
+                if let Ok(res) = client.head(&hash_library_url).send() {
+                    if res.status().is_success() {
+                        best_cover_url = hash_library_url;
+                    } else if let Ok(res2) = client.head(&best_cover_url).send() {
+                        if !res2.status().is_success() && !tiny_image.is_empty() {
+                            best_cover_url = tiny_image.clone();
+                        }
+                    }
+                }
+            }
+        } else if let Ok(res2) = client.head(&best_cover_url).send() {
+            if !res2.status().is_success() && !tiny_image.is_empty() {
+                best_cover_url = tiny_image;
+            }
+        }
+    } else {
+        // 重定向为主体游戏后，检查主体游戏 library 封面；若不存在则使用 header_image
+        if let Ok(res) = client.head(&best_cover_url).send() {
+            if !res.status().is_success() {
+                if let Some(ref data) = app_data_opt {
+                    if let Some(header_img) = data.get("header_image").and_then(|h| h.as_str()) {
+                        best_cover_url = header_img.to_string();
                     }
                 }
             }
         }
-    } else if let Ok(res2) = client.head(&best_cover_url).send() {
-        if !res2.status().is_success() && !tiny_image.is_empty() {
-            best_cover_url = tiny_image;
-        }
     }
     entry.local_cover = Some(best_cover_url);
 
-    // 获取游戏详情（发行日期、流派）
-    for cc_param in &["&cc=US", ""] {
-        let details_url = format!("https://store.steampowered.com/api/appdetails?appids={}&filters=basic,release_date,genres&l={}{}", app_id, lang, cc_param);
-        if let Ok(det_res) = client.get(&details_url).send() {
-            if det_res.status() == reqwest::StatusCode::FORBIDDEN || det_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                got_403 = true;
-                break;
-            } else if det_res.status().is_success() {
-                if let Ok(det_json) = det_res.json::<Value>() {
-                    if let Some(data) = extract_steam_app_data(&det_json, app_id as u32) {
-                        if let Some(release_date) = data.get("release_date").and_then(|r| r.get("date")).and_then(|d| d.as_str()) {
-                            entry.release_date = Some(release_date.to_string());
-                        }
-                        if let Some(genres) = data.get("genres").and_then(|g| g.as_array()) {
-                            let genre_names: Vec<String> = genres.iter()
-                                .filter_map(|g| g.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
-                                .collect();
-                            if !genre_names.is_empty() {
-                                entry.genres = Some(genre_names.join(", "));
+    // 填充游戏详情（发行日期、流派）
+    if let Some(ref data) = app_data_opt {
+        if let Some(release_date) = data.get("release_date").and_then(|r| r.get("date")).and_then(|d| d.as_str()) {
+            entry.release_date = Some(release_date.to_string());
+        }
+        if let Some(genres) = data.get("genres").and_then(|g| g.as_array()) {
+            let genre_names: Vec<String> = genres.iter()
+                .filter_map(|g| g.get("description").and_then(|d| d.as_str()).map(|s| s.to_string()))
+                .collect();
+            if !genre_names.is_empty() {
+                entry.genres = Some(genre_names.join(", "));
+            }
+        }
+        if !is_redirected {
+            if let Some(header_img) = data.get("header_image").and_then(|h| h.as_str()) {
+                let mut resolved_url = header_img.to_string();
+                if let Some(apps_idx) = header_img.find(&format!("/apps/{}/", app_id)) {
+                    let remainder = &header_img[apps_idx + format!("/apps/{}/", app_id).len()..];
+                    if let Some(slash_idx) = remainder.find('/') {
+                        let hash = &remainder[..slash_idx];
+                        let hash_library_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/{}/library_600x900_2x.jpg", app_id, hash);
+                        if let Ok(res) = client.head(&hash_library_url).send() {
+                            if res.status().is_success() {
+                                resolved_url = hash_library_url;
                             }
                         }
-                        if let Some(header_img) = data.get("header_image").and_then(|h| h.as_str()) {
-                            let mut resolved_url = header_img.to_string();
-                            if let Some(apps_idx) = header_img.find(&format!("/apps/{}/", app_id)) {
-                                let remainder = &header_img[apps_idx + format!("/apps/{}/", app_id).len()..];
-                                if let Some(slash_idx) = remainder.find('/') {
-                                    let hash = &remainder[..slash_idx];
-                                    let hash_library_url = format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/{}/library_600x900_2x.jpg", app_id, hash);
-                                    if let Ok(res) = client.head(&hash_library_url).send() {
-                                        if res.status().is_success() {
-                                            resolved_url = hash_library_url;
-                                        }
-                                    }
-                                }
-                            }
-                            entry.local_cover = Some(resolved_url);
-                        }
-                        break;
                     }
                 }
+                entry.local_cover = Some(resolved_url);
             }
         }
     }
@@ -1054,6 +1201,23 @@ pub fn sync_steam_metadata_blocking(
                                                     }
                                                     let _ = std::fs::write(p, &img_bytes);
                                                 }
+                                                // 同步复制一份到原目标 AppID 封面（若不同，如 DLC 重定向）
+                                                if let Some(orig_id) = target.appid {
+                                                    if orig_id as i64 != app_id {
+                                                        let alt_filename = format!("{}.jpg", orig_id);
+                                                        for p in &[
+                                                            covers_dir_clone.join(&alt_filename),
+                                                            std::path::PathBuf::from("covers").join(&alt_filename),
+                                                            std::path::PathBuf::from("src-tauri/covers").join(&alt_filename),
+                                                            std::path::PathBuf::from("../covers").join(&alt_filename),
+                                                        ] {
+                                                            if let Some(parent) = p.parent() {
+                                                                let _ = std::fs::create_dir_all(parent);
+                                                            }
+                                                            let _ = std::fs::write(p, &img_bytes);
+                                                        }
+                                                    }
+                                                }
                                                 break;
                                             }
                                         }
@@ -1181,11 +1345,22 @@ pub fn parse_steam_appid(input: &str) -> Option<u32> {
 /// 通过确定的 Steam AppID 精确抓取游戏详情、评价与高清竖版封面（包含是否触发403/429标识）
 pub fn fetch_steam_game_by_appid_ext(
     client: &Client,
-    app_id: u32,
+    original_app_id: u32,
     base_name: &str,
     lang: &str,
 ) -> (Option<SteamCacheEntry>, bool) {
-    let mut got_403 = false;
+    let (initial_app_data, mut got_403) = fetch_steam_app_details(client, original_app_id, lang);
+    let app_data = match initial_app_data {
+        Some(d) => d,
+        None => return (None, got_403),
+    };
+
+    // 若找到的是 DLC 或附加包，追溯使用其主体游戏的信息
+    let (app_id, app_data, redirect_403) = resolve_to_base_game(client, original_app_id, app_data, lang);
+    if redirect_403 {
+        got_403 = true;
+    }
+
     let mut entry = SteamCacheEntry {
         base_name: base_name.to_string(),
         appid: Some(app_id as i64),
@@ -1200,39 +1375,6 @@ pub fn fetch_steam_game_by_appid_ext(
         last_updated: Some(chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()),
         genres: None,
         is_manual: Some(false),
-    };
-
-    // 1. 获取基本详情 (name, release_date, genres)
-    // 优先使用 cc=US 避免国区限制屏蔽成人向或锁区游戏（如《洛夫克拉夫特行动：堕落玩偶》）；若获取失败再尝试无 cc 参数
-    let mut app_data_opt = None;
-
-    for cc_param in &["&cc=US", ""] {
-        let details_url = format!(
-            "https://store.steampowered.com/api/appdetails?appids={}&filters=basic,release_date,genres&l={}{}",
-            app_id, lang, cc_param
-        );
-        match client.get(&details_url).send() {
-            Ok(det_res) => {
-                if det_res.status() == reqwest::StatusCode::FORBIDDEN || det_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    got_403 = true;
-                    break;
-                }
-                if det_res.status().is_success() {
-                    if let Ok(det_json) = det_res.json::<Value>() {
-                        if let Some(d) = extract_steam_app_data(&det_json, app_id) {
-                            app_data_opt = Some(d.clone());
-                            break;
-                        }
-                    }
-                }
-            }
-            Err(_) => {}
-        }
-    }
-
-    let app_data = match app_data_opt {
-        Some(d) => d,
-        None => return (None, got_403),
     };
 
     if let Some(name) = app_data.get("name").and_then(|n| n.as_str()) {
@@ -1260,10 +1402,10 @@ pub fn fetch_steam_game_by_appid_ext(
         }
     }
 
-    // 2. 获取全部评测数据
+    // 2. 获取全部评测数据（使用主体游戏 AppID）
     let review_url = format!(
         "https://store.steampowered.com/appreviews/{}?json=1&language=all&l={}&purchase_type=all",
-        app_id, lang
+        canonical_id, lang
     );
     if let Ok(rev_res) = client.get(&review_url).send() {
         if rev_res.status() == reqwest::StatusCode::FORBIDDEN || rev_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -1284,10 +1426,10 @@ pub fn fetch_steam_game_by_appid_ext(
         }
     }
 
-    // 3. 获取近 30 天评测数据
+    // 3. 获取近 30 天评测数据（使用主体游戏 AppID）
     let recent_review_url = format!(
         "https://store.steampowered.com/appreviews/{}?json=1&language=all&l={}&purchase_type=all&day_range=30",
-        app_id, lang
+        canonical_id, lang
     );
     if let Ok(rev_res) = client.get(&recent_review_url).send() {
         if rev_res.status() == reqwest::StatusCode::FORBIDDEN || rev_res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -1307,7 +1449,7 @@ pub fn fetch_steam_game_by_appid_ext(
         }
     }
 
-    // 4. 下载并存储封面文件（优先竖版 600x900）
+    // 4. 下载并存储封面文件（优先主体游戏竖版 600x900）
     let mut covers_dir = std::env::current_exe().unwrap_or_default();
     covers_dir.pop();
     covers_dir.push("covers");
@@ -1322,15 +1464,13 @@ pub fn fetch_steam_game_by_appid_ext(
     ];
 
     let mut candidate_urls = vec![
-        format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", app_id),
-        format!("https://steamcdn-a.akamaihd.net/steam/apps/{}/library_600x900_2x.jpg", app_id),
-        format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900.jpg", app_id),
-        format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/header.jpg", app_id),
+        format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", canonical_id),
+        format!("https://steamcdn-a.akamaihd.net/steam/apps/{}/library_600x900_2x.jpg", canonical_id),
+        format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900.jpg", canonical_id),
+        format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/header.jpg", canonical_id),
     ];
-    if canonical_id != app_id as i64 {
-        candidate_urls.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", canonical_id));
-        candidate_urls.push(format!("https://steamcdn-a.akamaihd.net/steam/apps/{}/library_600x900.jpg", canonical_id));
-        candidate_urls.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/header.jpg", canonical_id));
+    if original_app_id as i64 != canonical_id {
+        candidate_urls.push(format!("https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/{}/library_600x900_2x.jpg", original_app_id));
     }
 
     let save_cover_bytes = |bytes: &[u8]| {
@@ -1340,8 +1480,8 @@ pub fn fetch_steam_game_by_appid_ext(
             }
             let _ = std::fs::write(path, bytes);
         }
-        if canonical_id != app_id as i64 {
-            let alt_filename = format!("{}.jpg", app_id);
+        if original_app_id as i64 != canonical_id {
+            let alt_filename = format!("{}.jpg", original_app_id);
             for p in &[
                 covers_dir.join(&alt_filename),
                 std::path::PathBuf::from("covers").join(&alt_filename),
@@ -1472,6 +1612,81 @@ mod tests {
         assert_eq!(entry.appid, Some(289130));
         println!("Entry name: {:?}", entry.name);
         println!("Entry local_cover: {:?}", entry.local_cover);
+    }
+
+    #[test]
+    fn test_extract_parent_app_info_dlc() {
+        let json_str = r#"{
+            "type": "dlc",
+            "name": "The Witcher 3: Wild Hunt - Blood and Wine",
+            "steam_appid": 378648,
+            "fullgame": {
+                "appid": "292030",
+                "name": "The Witcher 3: Wild Hunt - Complete Edition"
+            }
+        }"#;
+        let v: Value = serde_json::from_str(json_str).unwrap();
+        let parent = extract_parent_app_info(&v);
+        assert_eq!(parent, Some((292030, Some("The Witcher 3: Wild Hunt - Complete Edition".to_string()))));
+    }
+
+    #[test]
+    fn test_extract_parent_app_info_regular_game() {
+        let json_str = r#"{
+            "type": "game",
+            "name": "The Witcher 3: Wild Hunt",
+            "steam_appid": 292030
+        }"#;
+        let v: Value = serde_json::from_str(json_str).unwrap();
+        let parent = extract_parent_app_info(&v);
+        assert_eq!(parent, None);
+    }
+
+    #[test]
+    fn test_extract_parent_app_info_soundtrack_number_id() {
+        let json_str = r#"{
+            "type": "music",
+            "name": "Fantasy Grounds Soundtrack",
+            "steam_appid": 608140,
+            "fullgame": {
+                "appid": 252690
+            }
+        }"#;
+        let v: Value = serde_json::from_str(json_str).unwrap();
+        let parent = extract_parent_app_info(&v);
+        assert_eq!(parent, Some((252690, None)));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fetch_steam_game_by_appid_dlc_redirect_witcher() {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap();
+        // 378648 是巫师3大型 DLC《血与酒》，其主体游戏为 292030 (The Witcher 3)
+        let res = fetch_steam_game_by_appid(&client, 378648, "blood and wine", "schinese");
+        assert!(res.is_ok(), "Failed: {:?}", res.err());
+        let entry = res.unwrap();
+        let name = entry.name.unwrap_or_default();
+        assert!(name.contains("The Witcher 3") || name.contains("巫师"));
+    }
+
+    #[test]
+    #[ignore]
+    fn test_fetch_steam_game_info_dlc_redirect_elden_ring() {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .unwrap();
+        // 搜索词为 DLC 名称 "Shadow of the Erdtree"，搜索命中的通常为 DLC 2778580，应自动解析为主体游戏 1245620 (ELDEN RING)
+        let (entry_opt, _) = fetch_steam_game_info_ext(&client, "Shadow of the Erdtree", "english");
+        assert!(entry_opt.is_some());
+        let entry = entry_opt.unwrap();
+        assert_eq!(entry.appid, Some(1245620), "DLC 搜索结果应重定向为主体游戏 AppID 1245620");
+        assert_eq!(entry.name.as_deref(), Some("ELDEN RING"));
     }
 }
 
