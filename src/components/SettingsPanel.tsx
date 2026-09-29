@@ -177,70 +177,6 @@ export default function SettingsPanel({
             </select>
           </div>
         </div>
-
-        <div className="settings-section" style={{ marginTop: "2rem" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
-            <h3 style={{ margin: 0 }}>{t("dataCorrectionTitle")}</h3>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              {isCorrecting ? (
-                <button 
-                  className="action-btn" 
-                  onClick={cancelCorrection} 
-                  style={{ 
-                    width: "auto", 
-                    padding: "0.5rem 1rem", 
-                    fontSize: "0.9rem",
-                    backgroundColor: "rgba(239, 68, 68, 0.2)",
-                    borderColor: "var(--danger-color)",
-                    color: "#fff"
-                  }}
-                >
-                  <X size={16} style={{ marginRight: "0.4rem" }} />
-                  {t("dataCorrectionBtnCancel")}
-                </button>
-              ) : (
-                <button 
-                  className="action-btn" 
-                  onClick={startCorrection} 
-                  style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}
-                >
-                  <Sparkles size={16} style={{ marginRight: "0.4rem" }} />
-                  {t("dataCorrectionBtnStart")}
-                </button>
-              )}
-            </div>
-          </div>
-          <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "0.5rem" }}>
-            {t("dataCorrectionDesc")}
-          </p>
-          <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "1rem" }}>
-            {t("dataCorrectionLastRun")}: <span style={{ color: "var(--text-primary)" }}>{dataCorrectionLastRun || t("dataCorrectionNeverRun")}</span>
-          </div>
-
-          {isCorrecting && (
-            <div style={{ marginTop: "1rem", background: "rgba(255, 255, 255, 0.03)", padding: "1rem", borderRadius: "8px", border: "1px solid var(--panel-border)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.85rem", marginBottom: "0.5rem" }}>
-                <span style={{ color: "var(--primary-accent)", display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                  <RefreshCw size={14} className="animate-spin" />
-                  {correctingMessage || t("dataCorrectionBtnRunning")}
-                </span>
-                <span style={{ color: "var(--text-secondary)" }}>
-                  {correctingTotal > 0 ? `${correctingCurrent} / ${correctingTotal} (${progressPercent}%)` : ""}
-                </span>
-              </div>
-              <div style={{ width: "100%", height: "6px", backgroundColor: "var(--bg-lighter)", borderRadius: "3px", overflow: "hidden" }}>
-                <div style={{ width: `${progressPercent}%`, height: "100%", backgroundColor: "var(--primary-accent)", transition: "width 0.3s ease" }} />
-              </div>
-            </div>
-          )}
-
-          {!isCorrecting && correctingMessage && correctingPhase === "completed" && (
-            <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "#10b981", display: "flex", alignItems: "center", gap: "0.4rem" }}>
-              <CheckCircle size={15} />
-              <span>{correctingMessage}</span>
-            </div>
-          )}
-        </div>
         </>
       )}
 
@@ -337,7 +273,77 @@ export default function SettingsPanel({
               onClose={clearLogs}
             />
           </div>
+        </>
+      )}
 
+      {activeTab === "steam" && (
+        <>
+          {/* 1. 历史数据校准与维护 */}
+          <div className="settings-section">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
+              <h3 style={{ margin: 0 }}>{t("dataCorrectionTitle")}</h3>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                {isCorrecting ? (
+                  <button 
+                    className="action-btn" 
+                    onClick={cancelCorrection} 
+                    style={{ 
+                      width: "auto", 
+                      padding: "0.5rem 1rem", 
+                      fontSize: "0.9rem",
+                      backgroundColor: "rgba(239, 68, 68, 0.2)",
+                      borderColor: "var(--danger-color)",
+                      color: "#fff"
+                    }}
+                  >
+                    <X size={16} style={{ marginRight: "0.4rem" }} />
+                    {t("dataCorrectionBtnCancel")}
+                  </button>
+                ) : (
+                  <button 
+                    className="action-btn" 
+                    onClick={startCorrection} 
+                    style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}
+                  >
+                    <Sparkles size={16} style={{ marginRight: "0.4rem" }} />
+                    {t("dataCorrectionBtnStart")}
+                  </button>
+                )}
+              </div>
+            </div>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "0.5rem" }}>
+              {t("dataCorrectionDesc")}
+            </p>
+            <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "1rem" }}>
+              {t("dataCorrectionLastRun")}: <span style={{ color: "var(--text-primary)" }}>{dataCorrectionLastRun || t("dataCorrectionNeverRun")}</span>
+            </div>
+
+            {isCorrecting && (
+              <div style={{ marginTop: "1rem", background: "rgba(255, 255, 255, 0.03)", padding: "1rem", borderRadius: "8px", border: "1px solid var(--panel-border)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.85rem", marginBottom: "0.5rem" }}>
+                  <span style={{ color: "var(--primary-accent)", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                    <RefreshCw size={14} className="animate-spin" />
+                    {correctingMessage || t("dataCorrectionBtnRunning")}
+                  </span>
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    {correctingTotal > 0 ? `${correctingCurrent} / ${correctingTotal} (${progressPercent}%)` : ""}
+                  </span>
+                </div>
+                <div style={{ width: "100%", height: "6px", backgroundColor: "var(--bg-lighter)", borderRadius: "3px", overflow: "hidden" }}>
+                  <div style={{ width: `${progressPercent}%`, height: "100%", backgroundColor: "var(--primary-accent)", transition: "width 0.3s ease" }} />
+                </div>
+              </div>
+            )}
+
+            {!isCorrecting && correctingMessage && correctingPhase === "completed" && (
+              <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "#10b981", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <CheckCircle size={15} />
+                <span>{correctingMessage}</span>
+              </div>
+            )}
+          </div>
+
+          {/* 2. 游戏信息获取与 API 线程 / 清空缓存 */}
           <div className="settings-section">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
               <h3 style={{ margin: 0 }}>{t("apiThreads")}</h3>
@@ -389,6 +395,7 @@ export default function SettingsPanel({
             </div>
           </div>
 
+          {/* 3. 重新计算游戏数据 */}
           <div className="settings-section">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
               <h3 style={{ margin: 0 }}>{t("recalculateDbTitle")}</h3>

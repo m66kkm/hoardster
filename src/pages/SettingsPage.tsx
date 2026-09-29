@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Sliders, FolderOpen, Info } from "lucide-react";
+import { Sliders, FolderOpen, Info, Gamepad2 } from "lucide-react";
 
 import TabNav, { type TabDef } from "../components/TabNav";
 import SettingsPanel from "../components/SettingsPanel";
@@ -40,6 +40,7 @@ export default function SettingsPage() {
   const tabs: TabDef[] = [
     { id: "general", icon: Sliders, labelKey: "tabSettingsGeneral" },
     { id: "local", icon: FolderOpen, labelKey: "tabSettingsLocal" },
+    { id: "steam", icon: Gamepad2, labelKey: "tabSettingsSteam" },
     { id: "intel", icon: Info, labelKey: "tabSettingsIntel" }
   ];
 
