@@ -688,9 +688,15 @@ pub fn delete_game_by_path(conn: &Connection, full_path: &str) -> Result<()> {
 
 pub fn get_games_stats(conn: &Connection) -> Result<StatsSummary> {
     let total_scan: i64 = conn.query_row("SELECT count(*) FROM games", [], |row| row.get(0))?;
-    let unique_games: i64 = conn.query_row("SELECT count(*) FROM games WHERE is_representative = 1", [], |row| row.get(0))?;
-    let exact_dups: i64 = conn.query_row("SELECT count(*) FROM games WHERE is_exact_dup = 1", [], |row| row.get(0))?;
-    let version_dups: i64 = conn.query_row("SELECT count(*) FROM games WHERE is_version_dup = 1", [], |row| row.get(0))?;
+    let unique_games: i64 = conn.query_row(
+        "SELECT count(DISTINCT CASE WHEN s.appid IS NOT NULL AND s.appid > 0 THEN 'app_' || s.appid ELSE 'base_' || g.base_name END) 
+         FROM games g 
+         LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name",
+        [],
+        |row| row.get(0),
+    )?;
+    let exact_dups: i64 = 0;
+    let version_dups: i64 = conn.query_row("SELECT count(*) FROM games WHERE is_version_dup = 1 OR is_exact_dup = 1", [], |row| row.get(0))?;
 
     let franchise_count: i64 = conn.query_row(
         "SELECT count(*) FROM (
@@ -724,6 +730,7 @@ pub fn get_games_list(
     only_installed: bool,
     only_archived: bool,
 ) -> Result<Vec<Game>> {
+    let _ = only_representatives; // 代表版本概念已移除，所有游戏均展示
     let mut query = String::from(
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
                 s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
@@ -733,10 +740,6 @@ pub fn get_games_list(
     );
 
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-    if only_representatives {
-        query.push_str(" AND g.is_representative = 1");
-    }
 
     if only_installed {
         query.push_str(" AND g.type = 'Installed'");
@@ -837,22 +840,17 @@ pub fn get_games_list(
 }
 
 pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<DuplicateGroup>> {
-    // 1. 获取所有重复游戏
-    let query = if dup_type == "exact" {
-        "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
-         FROM games g
-         LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
-         WHERE g.is_exact_dup = 1
-         ORDER BY g.base_name ASC, g.original_name ASC"
-    } else {
-        "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
-                s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
-         FROM games g
-         LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
-         WHERE g.is_version_dup = 1
-         ORDER BY g.base_name ASC, g.original_name ASC"
-    };
+    // exact 重复已与 version 统一为“疑似重复”，返回空列表避免前端重复展示
+    if dup_type == "exact" {
+        return Ok(Vec::new());
+    }
+
+    let query = "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
+                        s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
+                 FROM games g
+                 LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
+                 WHERE g.is_version_dup = 1 OR g.is_exact_dup = 1
+                 ORDER BY g.base_name ASC, g.original_name ASC";
 
     let mut stmt = conn.prepare(query)?;
     let rows = stmt.query_map([], |row| {
@@ -869,7 +867,7 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
             created: row.get::<_, Option<String>>(9)?.unwrap_or_default(),
             is_exact_dup: row.get::<_, i32>(10)? != 0,
             is_version_dup: row.get::<_, i32>(11)? != 0,
-            is_representative: row.get::<_, i32>(12)? != 0,
+            is_representative: false,
             
             appid: row.get(13)?,
             name: row.get(14)?,
@@ -890,12 +888,15 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
     for r in rows {
         let game = r?;
         let cat = crate::scanner::normalize_dup_type_category(&game.r#type);
-        let key = if dup_type == "exact" {
-            // 完全重复按 CleanName + Category 分组
-            format!("{}:::{}", game.clean_name, cat)
+        // 核心规则：若具有 Steam AppID 则以 AppID 为准判断疑似重复，否则回退至 base_name
+        let key = if let Some(appid) = game.appid {
+            if appid > 0 {
+                format!("appid_{}:::{}", appid, cat)
+            } else {
+                format!("base_{}:::{}", game.base_name, cat)
+            }
         } else {
-            // 版本重复按 BaseName + Category 分组
-            format!("{}:::{}", game.base_name, cat)
+            format!("base_{}:::{}", game.base_name, cat)
         };
 
         if !grouped.contains_key(&key) {
@@ -908,13 +909,12 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
     for key in order {
         if let Some(games) = grouped.get(&key) {
             if games.len() > 1 {
-                // 使用第一个条目的 original_name 或 base_name 作为分组标题
-                let title = if dup_type == "exact" {
-                    games[0].original_name.clone()
-                } else {
-                    let base = key.split(":::").next().unwrap_or(&key);
-                    base.to_uppercase()
-                };
+                // 优先使用 Steam 官方游戏名称
+                let title = games.iter()
+                    .find_map(|g| g.name.clone())
+                    .filter(|n| !n.trim().is_empty())
+                    .unwrap_or_else(|| games[0].original_name.clone());
+
                 result.push(DuplicateGroup {
                     name: title,
                     games: games.clone(),
@@ -927,13 +927,12 @@ pub fn get_duplicates(conn: &Connection, dup_type: &str) -> Result<Vec<Duplicate
 }
 
 pub fn get_franchises(conn: &Connection) -> Result<Vec<FranchiseGroup>> {
-    // 获取所有代表游戏用于系列分组
+    // 获取所有游戏用于系列分组
     let mut stmt = conn.prepare(
         "SELECT g.id, g.original_name, g.clean_name, g.base_name, g.type, g.source_path, g.full_path, g.size, g.size_bytes, g.created, g.is_exact_dup, g.is_version_dup, g.is_representative,
                 s.appid, s.name, s.local_cover, CAST(s.review_score_desc AS INTEGER), s.positive_percent, s.total_reviews, s.recent_review_score_desc, s.recent_positive_percent, s.release_date, s.genres
          FROM games g
          LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
-         WHERE g.is_representative = 1
          ORDER BY g.base_name ASC"
     )?;
 
@@ -1083,7 +1082,7 @@ pub fn get_genre_stats(conn: &Connection) -> Result<Vec<GenreStat>> {
     let mut stmt = conn.prepare(
         "SELECT s.genres FROM games g 
          JOIN steam_db.steam_cache s ON g.base_name = s.base_name 
-         WHERE g.is_representative = 1 AND s.genres IS NOT NULL"
+         WHERE s.genres IS NOT NULL"
     )?;
     
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -1115,8 +1114,7 @@ pub struct RatingStat {
 pub fn get_rating_stats(conn: &Connection) -> Result<Vec<RatingStat>> {
     let mut stmt = conn.prepare(
         "SELECT CAST(s.review_score_desc AS INTEGER) FROM games g 
-         JOIN steam_db.steam_cache s ON g.base_name = s.base_name 
-         WHERE g.is_representative = 1"
+         JOIN steam_db.steam_cache s ON g.base_name = s.base_name"
     )?;
     
     let rows = stmt.query_map([], |row| row.get::<_, Option<i32>>(0))?;
@@ -1424,7 +1422,7 @@ pub fn get_torrents_sr(conn: &Connection) -> Result<Vec<TorrentSR>> {
     Ok(list)
 }
 
-/// 根据最新的通用清洗规则和反续作漂移规则，重新计算当前数据库中所有游戏的名字、去重标记与代表选择，
+/// 根据最新的通用清洗规则和反续作漂移规则，重新计算当前数据库中所有游戏的名字与疑似重复标记（基于 Steam AppID 归集，移除代表版本概念）
 /// 并清理 steam_cache 中违反续作兼容性的错误缓存记录。
 /// 返回 (更新的游戏总数, 发生 base_name 变更的游戏数, 清理的错误缓存数)
 pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, usize)> {
@@ -1433,15 +1431,21 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
         original_name: String,
         old_base: String,
         r#type: String,
+        appid: Option<i64>,
     }
 
-    let mut stmt = conn.prepare("SELECT id, original_name, base_name, type FROM games")?;
+    let mut stmt = conn.prepare(
+        "SELECT g.id, g.original_name, g.base_name, g.type, s.appid 
+         FROM games g 
+         LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name"
+    )?;
     let games: Vec<RawGame> = stmt.query_map([], |row| {
         Ok(RawGame {
             id: row.get(0)?,
             original_name: row.get(1)?,
             old_base: row.get(2)?,
             r#type: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            appid: row.get::<_, Option<i64>>(4)?.filter(|id| *id > 0),
         })
     })?.filter_map(|r| r.ok()).collect();
     drop(stmt);
@@ -1452,11 +1456,11 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
 
     struct ProcessedGame {
         id: i64,
-        original_name: String,
         clean_name: String,
         base_name: String,
         old_base: String,
         r#type: String,
+        appid: Option<i64>,
         is_exact_dup: bool,
         is_version_dup: bool,
         is_representative: bool,
@@ -1469,11 +1473,11 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
         let changed = base != g.old_base;
         ProcessedGame {
             id: g.id,
-            original_name: g.original_name,
             clean_name: clean,
             base_name: base,
             old_base: g.old_base,
             r#type: g.r#type,
+            appid: g.appid,
             is_exact_dup: false,
             is_version_dup: false,
             is_representative: false,
@@ -1481,49 +1485,27 @@ pub fn recalculate_existing_games(conn: &Connection) -> Result<(usize, usize, us
         }
     }).collect();
 
-    // 按照同种类型大类（安装 vs 归档）分别进行去重判断与代表选择
-    let mut base_groups: HashMap<(String, &'static str), Vec<usize>> = HashMap::new();
+    // 简化去重判断逻辑：
+    // 若游戏匹配到了 Steam AppID，则以 AppID 为基准判断重复；无 AppID 则以 base_name 为准；
+    // 同大类（安装 vs 归档）内相同 AppID 判定为疑似重复；彻底移除代表版本概念。
+    let mut dup_groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, g) in processed.iter().enumerate() {
         let cat = crate::scanner::normalize_dup_type_category(&g.r#type);
-        base_groups.entry((g.base_name.clone(), cat)).or_insert_with(Vec::new).push(idx);
+        let key = if let Some(aid) = g.appid {
+            format!("appid_{}:::{}", aid, cat)
+        } else {
+            format!("base_{}:::{}", g.base_name, cat)
+        };
+        dup_groups.entry(key).or_insert_with(Vec::new).push(idx);
     }
 
-    for ((_base, _cat), idx_list) in &base_groups {
-        let is_exact;
-        let is_version;
-
-        if idx_list.len() > 1 {
-            let mut clean_groups: HashMap<String, Vec<usize>> = HashMap::new();
-            for &idx in idx_list {
-                clean_groups.entry(processed[idx].clean_name.clone()).or_insert_with(Vec::new).push(idx);
-            }
-            if clean_groups.len() > 1 {
-                is_version = true;
-                is_exact = false;
-            } else {
-                is_version = false;
-                is_exact = true;
-            }
-        } else {
-            is_version = false;
-            is_exact = false;
-        }
-
+    for (_key, idx_list) in &dup_groups {
+        let is_dup = idx_list.len() > 1;
         for &idx in idx_list {
-            processed[idx].is_exact_dup = is_exact;
-            processed[idx].is_version_dup = is_version;
+            processed[idx].is_version_dup = is_dup;
+            processed[idx].is_exact_dup = false;
+            processed[idx].is_representative = false; // 代表版本概念彻底移除
         }
-
-        let mut best_idx = idx_list[0];
-        let mut min_len = processed[best_idx].original_name.len();
-        for &idx in idx_list.iter().skip(1) {
-            let len = processed[idx].original_name.len();
-            if len < min_len {
-                min_len = len;
-                best_idx = idx;
-            }
-        }
-        processed[best_idx].is_representative = true;
     }
 
     let mut update_stmt = conn.prepare(
@@ -1822,16 +1804,39 @@ mod tests {
         assert_eq!(version_groups[0].games.len(), 2, "Dead Cells 重复组内应仅包含两份安装版本");
         assert!(version_groups[0].games.iter().all(|g| g.r#type == "Installed"));
 
+        // 场景 3：验证不同目录名但匹配同一 Steam AppID 的游戏被正确判定为疑似重复
+        conn.execute(
+            "INSERT INTO steam_db.steam_cache (base_name, appid, name) VALUES ('mhw', 582010, 'Monster Hunter: World')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO steam_db.steam_cache (base_name, appid, name) VALUES ('mhw iceborne', 582010, 'Monster Hunter: World')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, type, source_path, full_path) VALUES (?, ?, ?, ?, ?, ?)",
+            params!["Monster Hunter World", "mhw", "mhw", "Installed", "E:\\Games", "E:\\Games\\MHW"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO games (original_name, clean_name, base_name, type, source_path, full_path) VALUES (?, ?, ?, ?, ?, ?)",
+            params!["Monster Hunter World - Iceborne", "mhw iceborne", "mhw iceborne", "Installed", "E:\\Games", "E:\\Games\\MHW_Iceborne"],
+        ).unwrap();
+
+        recalculate_existing_games(&conn).unwrap();
+        let mhw_dups: (i32, i32) = conn.query_row(
+            "SELECT is_exact_dup, is_version_dup FROM games WHERE full_path = 'E:\\Games\\MHW_Iceborne'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(mhw_dups, (0, 1), "相同 Steam AppID 的不同目录必须被判定为疑似重复");
+
         // 测试删除其中一份重复项 (Dead Cells v1) 后，去重状态与重复列表自动更新
         delete_game_by_path(&conn, "D:\\Games\\DeadCells_v1").unwrap();
-        let dc2_after: (i32, i32, i32) = conn.query_row(
-            "SELECT is_exact_dup, is_version_dup, is_representative FROM games WHERE full_path = 'D:\\Games\\DeadCells_v2'",
+        let dc2_after: (i32, i32) = conn.query_row(
+            "SELECT is_exact_dup, is_version_dup FROM games WHERE full_path = 'D:\\Games\\DeadCells_v2'",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         ).unwrap();
-        assert_eq!(dc2_after, (0, 0, 1), "删除 v1 后，残留的 v2 应该自动转为非重复代表版本");
-
-        let version_groups_after = get_duplicates(&conn, "version").unwrap();
-        assert_eq!(version_groups_after.len(), 0, "删除多余版本后，版本重复列表中不再包含 Dead Cells");
+        assert_eq!(dc2_after, (0, 0), "删除 v1 后，残留的 v2 应该自动解除重复标记");
     }
 }

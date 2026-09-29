@@ -7,7 +7,6 @@ import {
   HardDrive, 
   Calendar, 
   Layers, 
-  FolderGit2,
   CheckCircle2
 } from "lucide-react";
 import { useGameContextMenu } from "../hooks/useGameContextMenu";
@@ -34,26 +33,22 @@ interface DuplicateGroupItemProps {
 
 function DuplicateGroupItem({
   group,
-  type,
   copyPath,
   openGameFolder,
   onDeleteGame,
   onContextMenu,
-}: DuplicateGroupItemProps) {
+}: Omit<DuplicateGroupItemProps, "type">) {
   const { t } = useTranslation();
-  // 默认使用代表游戏或首个游戏，支持鼠标移到某一行记录时动态预览对应条目
-  const repGame = group.games.find((g) => g.is_representative) || group.games[0];
-  const [activeGame, setActiveGame] = useState<Game>(repGame);
+  // 默认使用首个游戏，支持鼠标移到某一行记录时动态预览对应条目
+  const [activeGame, setActiveGame] = useState<Game>(group.games[0]);
 
   return (
-    <div
-      className={`conflict-group ${type === "version" ? "is-version" : "is-exact"}`}
-    >
+    <div className="conflict-group is-version">
       <div className="conflict-group-body">
         {/* 左侧：游戏展示卡片 */}
         <div className="conflict-card-col">
           <GameCard
-            game={activeGame || repGame}
+            game={activeGame || group.games[0]}
             onOpenFolder={openGameFolder}
             onContextMenu={onContextMenu}
             hideTypeTag={true}
@@ -79,13 +74,8 @@ function DuplicateGroupItem({
                 <div className="conflict-path-header">
                   <div className="conflict-path-title-group">
                     <span className="conflict-path-name" title={game.original_name}>
-                      {type === "version" ? game.original_name : (game.name || game.original_name)}
+                      {game.original_name}
                     </span>
-                    {game.is_representative && (
-                      <span className="conflict-rep-tag" title="当前主库索引代表版本">
-                        代表版本
-                      </span>
-                    )}
                   </div>
 
                   <div className="conflict-path-actions">
@@ -158,8 +148,8 @@ export default function DuplicatesPanel({
     onRefresh,
   });
 
-  const hasExact = exactDuplicates.length > 0;
-  const hasVersion = versionDuplicates.length > 0;
+  const allDuplicates = [...exactDuplicates, ...versionDuplicates];
+  const hasDuplicates = allDuplicates.length > 0;
 
   return (
     <div className="panel" style={{ display: "block" }}>
@@ -170,50 +160,22 @@ export default function DuplicatesPanel({
         </p>
       </div>
 
-      {hasExact && (
-        <div style={{ marginBottom: hasVersion ? "3rem" : 0 }}>
-          <div className="conflict-section-header">
-            <div className="conflict-section-title">
-              <Layers size={19} style={{ color: "#f43f5e" }} />
-              <span>{t("dupExactSection")}</span>
-              <span className="conflict-section-count">{exactDuplicates.length}</span>
-            </div>
-            <span className="conflict-section-tip">文件内容完全相同的重复定本，可选择清理多余副本释放磁盘空间</span>
-          </div>
-
-          <div className="conflicts-list">
-            {exactDuplicates.map((group) => (
-              <DuplicateGroupItem
-                key={group.name}
-                group={group}
-                type="exact"
-                copyPath={copyPath}
-                openGameFolder={openGameFolder}
-                onDeleteGame={onDeleteGame}
-                onContextMenu={handleContextMenu}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {hasVersion && (
+      {hasDuplicates ? (
         <div>
           <div className="conflict-section-header">
             <div className="conflict-section-title">
-              <FolderGit2 size={19} style={{ color: "#f59e0b" }} />
-              <span>{t("dupVersionSection")}</span>
-              <span className="conflict-section-count">{versionDuplicates.length}</span>
+              <Layers size={19} style={{ color: "#f59e0b" }} />
+              <span>{t("dupTitleNew") || "疑似重复项目"}</span>
+              <span className="conflict-section-count">{allDuplicates.length}</span>
             </div>
-            <span className="conflict-section-tip">同一款游戏的不同版本（如早期发售版、年度版或备份），建议保留最佳版本</span>
+            <span className="conflict-section-tip">同一 Steam AppID 或相同游戏名称对应多处目录，可按需清理多余副本</span>
           </div>
 
           <div className="conflicts-list">
-            {versionDuplicates.map((group) => (
+            {allDuplicates.map((group) => (
               <DuplicateGroupItem
                 key={group.name}
                 group={group}
-                type="version"
                 copyPath={copyPath}
                 openGameFolder={openGameFolder}
                 onDeleteGame={onDeleteGame}
@@ -222,9 +184,7 @@ export default function DuplicatesPanel({
             ))}
           </div>
         </div>
-      )}
-
-      {!hasExact && !hasVersion && (
+      ) : (
         <div 
           className="conflict-empty-state" 
           style={{ 

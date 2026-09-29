@@ -189,7 +189,7 @@ async fn resync_all_steam_metadata_command(
              FROM games g 
              LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
              WHERE g.base_name IS NOT NULL AND g.base_name != ''
-             ORDER BY g.is_representative DESC, g.base_name ASC"
+             ORDER BY g.base_name ASC"
         ).map_err(|e| e.to_string())?;
 
         let mut targets_map: std::collections::BTreeMap<String, Option<u32>> = std::collections::BTreeMap::new();

@@ -605,54 +605,29 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
         },
     );
 
-    // 内存中的分组逻辑：按照同种类型大类（安装 vs 归档）分别进行去重判断与代表选择
-    // 如果一个游戏既有安装，又有归档，两者不互为重复。
-    let mut base_groups: HashMap<(String, &'static str), Vec<usize>> = HashMap::new();
+    // 内存中的去重分组逻辑：按照同种类型大类（安装 vs 归档）以及本地识别的 Steam AppID 进行去重判断
+    let mut dup_groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, game) in raw_scanned.iter().enumerate() {
         let cat = normalize_dup_type_category(&game.r#type);
-        base_groups.entry((game.base_name.clone(), cat)).or_insert_with(Vec::new).push(idx);
-    }
-
-    for ((_base_name, _cat), idx_list) in &base_groups {
-        let is_exact;
-        let is_version;
-
-        if idx_list.len() > 1 {
-            // 在此 (BaseName, Category) 组内按 CleanName 分组
-            let mut clean_groups: HashMap<String, Vec<usize>> = HashMap::new();
-            for &idx in idx_list {
-                clean_groups.entry(raw_scanned[idx].clean_name.clone()).or_insert_with(Vec::new).push(idx);
-            }
-
-            if clean_groups.len() > 1 {
-                is_version = true;
-                is_exact = false;
+        let key = if let Some(aid) = game.appid {
+            if aid > 0 {
+                format!("appid_{}:::{}", aid, cat)
             } else {
-                is_version = false;
-                is_exact = true;
+                format!("base_{}:::{}", game.base_name, cat)
             }
         } else {
-            is_version = false;
-            is_exact = false;
-        }
+            format!("base_{}:::{}", game.base_name, cat)
+        };
+        dup_groups.entry(key).or_insert_with(Vec::new).push(idx);
+    }
 
-        // 设置重复标记
+    for (_key, idx_list) in &dup_groups {
+        let is_dup = idx_list.len() > 1;
         for &idx in idx_list {
-            raw_scanned[idx].is_exact_dup = is_exact;
-            raw_scanned[idx].is_version_dup = is_version;
+            raw_scanned[idx].is_exact_dup = false;
+            raw_scanned[idx].is_version_dup = is_dup;
+            raw_scanned[idx].is_representative = false; // 移除代表版本概念
         }
-
-        // 选择本分类下的代表（最短 original_name 长度）
-        let mut best_idx = idx_list[0];
-        let mut min_len = raw_scanned[best_idx].original_name.len();
-        for &idx in idx_list.iter().skip(1) {
-            let len = raw_scanned[idx].original_name.len();
-            if len < min_len {
-                min_len = len;
-                best_idx = idx;
-            }
-        }
-        raw_scanned[best_idx].is_representative = true;
     }
 
     // 识别需要查询 Steam 缓存的游戏
@@ -660,23 +635,16 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
     for game in &raw_scanned {
         if let Some(appid) = game.appid {
             if appid > 0 {
-                if game.is_representative || !detected_appid_map.contains_key(&game.base_name) {
-                    detected_appid_map.insert(game.base_name.clone(), appid as u32);
-                }
+                detected_appid_map.entry(game.base_name.clone()).or_insert(appid as u32);
             }
         }
     }
 
-    let mut representatives = Vec::new();
-    for game in &raw_scanned {
-        if game.is_representative {
-            representatives.push(game.base_name.clone());
-        }
-    }
-    representatives.sort();
-    representatives.dedup();
+    let mut all_base_names: Vec<String> = raw_scanned.iter().map(|g| g.base_name.clone()).collect();
+    all_base_names.sort();
+    all_base_names.dedup();
 
-    let new_games: Vec<(String, Option<u32>)> = representatives
+    let new_games: Vec<(String, Option<u32>)> = all_base_names
         .into_iter()
         .filter(|base| {
             match cache.get(base) {
@@ -725,6 +693,8 @@ pub fn run_scan(app_handle: AppHandle, cancel_flag: Arc<AtomicBool>) -> Result<(
 
     // 同步 steam_cache 的 AppID、评测及封面元数据至 games 表
     let _ = crate::db::sync_game_metadata_covers(&conn);
+    // 扫描并入库 Steam 元数据后，根据最新匹配的 Steam AppID 全量刷新疑似重复判定
+    let _ = crate::db::recalculate_existing_games(&conn);
 
     // 记录扫描历史
     let completed_at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();

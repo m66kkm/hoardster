@@ -80,13 +80,7 @@ const matchRating = (game: Game, rating: string) => {
       };
 
       setExactDuplicates(filterGroup(exactDups));
-      
-      // Filter out version duplicates that are purely exact duplicates (all games have the same clean_name)
-      const filteredVersion = filterGroup(versionDups).filter(group => {
-        const uniqueCleanNames = new Set(group.games.map(g => g.clean_name));
-        return uniqueCleanNames.size > 1; 
-      });
-      setVersionDuplicates(filteredVersion);
+      setVersionDuplicates(filterGroup(versionDups));
     } catch (e) {
       console.error("获取重复项失败:", e);
     }

@@ -119,9 +119,11 @@ export default function FullIndexPanel({ games, currentPage, setCurrentPage, pag
                     <span className={`badge ${getTypeBadgeClass(game.type)}`}>{getTypeLabel(game.type, t)}</span>
                   </td>
                   <td>
-                    {game.is_exact_dup && <span className="badge badge-dup" style={{ marginRight: "0.35rem" }}>{t("tagExactDup")}</span>}
-                    {game.is_version_dup && <span className="badge badge-ver">{t("tagVersionDup")}</span>}
-                    {!game.is_exact_dup && !game.is_version_dup && <span style={{ color: "var(--text-secondary)", opacity: 0.3 }}>-</span>}
+                    {(game.is_version_dup || game.is_exact_dup) ? (
+                      <span className="badge badge-ver">{t("tagVersionDup") || "疑似重复"}</span>
+                    ) : (
+                      <span style={{ color: "var(--text-secondary)", opacity: 0.3 }}>-</span>
+                    )}
                   </td>
                   <td style={{ textAlign: "center" }}>
                     <div style={{ display: "flex", gap: "0.35rem", justifyContent: "center" }}>

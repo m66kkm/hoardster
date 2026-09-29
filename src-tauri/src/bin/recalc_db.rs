@@ -37,7 +37,7 @@ fn main() {
          FROM games g 
          LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name 
          WHERE (s.appid IS NULL OR s.appid = 0 OR s.review_score_desc IS NULL)
-         ORDER BY g.base_name, g.is_representative DESC"
+         ORDER BY g.base_name"
     ) {
         Ok(s) => s,
         Err(e) => {
