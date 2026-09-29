@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ask, message } from "@tauri-apps/plugin-dialog";
 import { useScrape } from "../hooks/useScrape";
 import { useDataCorrection } from "../hooks/useDataCorrection";
+import { useSteamResync } from "../hooks/useSteamResync";
 
 interface SettingsPanelProps {
   activeTab: string;
@@ -76,6 +77,17 @@ export default function SettingsPanel({
     startCorrection,
     cancelCorrection
   } = useDataCorrection();
+
+  const {
+    isResyncing,
+    resyncCurrent,
+    resyncTotal,
+    resyncMessage,
+    resyncStatus,
+    progressPercent: resyncProgressPercent,
+    startResync,
+    cancelResync,
+  } = useSteamResync();
 
   const [isClearing, setIsClearing] = useState(false);
   const [isClearingSR, setIsClearingSR] = useState(false);
@@ -343,38 +355,39 @@ export default function SettingsPanel({
             )}
           </div>
 
-          {/* 2. 游戏信息获取与 API 线程 / 清空缓存 */}
+          {/* 2. 游戏信息获取与 API 线程 / 清空缓存并重新获取 */}
           <div className="settings-section">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.5rem" }}>
               <h3 style={{ margin: 0 }}>{t("apiThreads")}</h3>
-              <button 
-                className="action-btn" 
-                onClick={async () => {
-                  try {
-                    await invoke("clear_steam_cache_command");
-                    if ((window as any).__TAURI_PLUGIN_DIALOG__) {
-                      const { message } = await import("@tauri-apps/plugin-dialog");
-                      message("Steam缓存已清空，开始重新获取数据！", { title: '成功', kind: 'info' });
-                    }
-                    startScan();
-                    const container = document.querySelector('.tab-content-scrollable');
-                    if (container) {
-                      container.scrollTo({ top: 0, behavior: 'smooth' });
-                    }
-                  } catch (e) {
-                    console.error("clear_steam_cache_command error:", e);
-                    if ((window as any).__TAURI_PLUGIN_DIALOG__) {
-                       const { message } = await import("@tauri-apps/plugin-dialog");
-                       message(`Error clearing cache: ${e}`, { title: 'Error', kind: 'error' });
-                    }
-                  }
-                }} 
-                style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}
-                title={t("clearSteamCacheDesc")}
-              >
-                <RefreshCw size={14} />
-                {t("clearSteamCache")}
-              </button>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                {isResyncing ? (
+                  <button 
+                    className="action-btn" 
+                    onClick={cancelResync} 
+                    style={{ 
+                      width: "auto", 
+                      padding: "0.5rem 1rem", 
+                      fontSize: "0.9rem",
+                      backgroundColor: "rgba(239, 68, 68, 0.2)",
+                      borderColor: "var(--danger-color)",
+                      color: "#fff"
+                    }}
+                  >
+                    <X size={16} style={{ marginRight: "0.4rem" }} />
+                    {t("cancel") || "取消"}
+                  </button>
+                ) : (
+                  <button 
+                    className="action-btn" 
+                    onClick={startResync} 
+                    style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.9rem" }}
+                    title={t("clearSteamCacheDesc")}
+                  >
+                    <RefreshCw size={14} style={{ marginRight: "0.4rem" }} />
+                    {t("clearSteamCache")}
+                  </button>
+                )}
+              </div>
             </div>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem", marginBottom: "0.5rem" }}>
               {t("clearSteamCacheDesc")}
@@ -393,6 +406,38 @@ export default function SettingsPanel({
               />
               <span style={{ marginLeft: "1rem", color: "var(--text-secondary)" }}>{t("threads")}</span>
             </div>
+
+            {/* 实时进度条 */}
+            {isResyncing && (
+              <div style={{ marginTop: "1rem", background: "rgba(255, 255, 255, 0.03)", padding: "1rem", borderRadius: "8px", border: "1px solid var(--panel-border)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.85rem", marginBottom: "0.5rem" }}>
+                  <span style={{ color: "var(--primary-accent)", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                    <RefreshCw size={14} className="animate-spin" />
+                    {resyncMessage || "正在从 Steam 获取数据..."}
+                  </span>
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    {resyncTotal > 0 ? `${resyncCurrent} / ${resyncTotal} (${resyncProgressPercent}%)` : ""}
+                  </span>
+                </div>
+                <div style={{ width: "100%", height: "6px", backgroundColor: "var(--bg-lighter)", borderRadius: "3px", overflow: "hidden" }}>
+                  <div style={{ width: `${resyncProgressPercent}%`, height: "100%", backgroundColor: "var(--primary-accent)", transition: "width 0.3s ease" }} />
+                </div>
+              </div>
+            )}
+
+            {!isResyncing && resyncMessage && resyncStatus === "completed" && (
+              <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "#10b981", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <CheckCircle size={15} />
+                <span>{resyncMessage}</span>
+              </div>
+            )}
+
+            {!isResyncing && resyncMessage && resyncStatus === "error" && (
+              <div style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "#ef4444", display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                <X size={15} />
+                <span>{resyncMessage}</span>
+              </div>
+            )}
           </div>
 
           {/* 3. 重新计算游戏数据 */}

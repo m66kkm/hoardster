@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { Monitor, Flame, BarChart2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import TabNav, { type TabDef } from "../components/TabNav";
 import StatsGrid from "../components/StatsGrid";
@@ -57,6 +58,24 @@ export default function HomePage() {
         .catch(console.error);
     }
   }, [activeTab, searchVal, loadGames]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen("games-updated", () => {
+      if (activeTab === "dashboard") {
+        loadGames(true, false);
+      }
+      invoke<StatsSummary>("get_games_stats_command")
+        .then(setStats)
+        .catch(console.error);
+    }).then(fn => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [activeTab, loadGames]);
 
   const tabs: TabDef[] = [
     { id: "dashboard", icon: Monitor, labelKey: "tabDashboard" },

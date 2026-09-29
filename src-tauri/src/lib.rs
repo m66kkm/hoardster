@@ -23,6 +23,12 @@ pub struct ScrapeState {
     pub is_cancelled: Arc<AtomicBool>,
 }
 
+/// Steam 元数据全量同步状态
+pub struct SteamResyncState {
+    pub is_running: Arc<AtomicBool>,
+    pub cancel_flag: Arc<AtomicBool>,
+}
+
 #[tauri::command]
 fn get_scan_paths_command(state: tauri::State<'_, db::DbState>) -> Result<Vec<db::ScanPathEntry>, String> {
     let conn = state.0.lock().map_err(|e| e.to_string())?;
@@ -151,10 +157,120 @@ fn clear_steam_cache_command(state: tauri::State<'_, db::DbState>) -> Result<(),
 }
 
 #[tauri::command]
-fn recalculate_games_command(state: tauri::State<'_, db::DbState>) -> Result<String, String> {
+fn cancel_steam_resync_command(state: tauri::State<'_, SteamResyncState>) -> Result<(), String> {
+    state.cancel_flag.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+/// 针对本地数据库中现存的所有游戏，直接多线程从 Steam 重新拉取元数据（自动穿透 DLC 至主游戏本体、更新好评率与封面）
+#[tauri::command]
+async fn resync_all_steam_metadata_command(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, SteamResyncState>,
+) -> Result<String, String> {
+    use tauri::Emitter;
+    if state.is_running.load(Ordering::Relaxed) {
+        return Err("Steam 元数据同步任务已在运行中，请勿重复触发".to_string());
+    }
+
+    state.is_running.store(true, Ordering::SeqCst);
+    state.cancel_flag.store(false, Ordering::SeqCst);
+
+    let cancel_flag = state.cancel_flag.clone();
+    let is_running_flag = state.is_running.clone();
+    let app = app_handle.clone();
+
+    let res = tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        let conn = crate::db::get_connection().map_err(|e| e.to_string())?;
+
+        // 1. 获取本地数据库中所有游戏的代表 base_name，并关联已存在的 detected_appid
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT g.base_name, s.appid 
+             FROM games g 
+             LEFT JOIN steam_db.steam_cache s ON g.base_name = s.base_name
+             WHERE g.base_name IS NOT NULL AND g.base_name != ''
+             ORDER BY g.is_representative DESC, g.base_name ASC"
+        ).map_err(|e| e.to_string())?;
+
+        let mut targets_map: std::collections::BTreeMap<String, Option<u32>> = std::collections::BTreeMap::new();
+        let rows = stmt.query_map([], |row| {
+            let b: String = row.get(0)?;
+            let a: Option<i64> = row.get(1)?;
+            Ok((b, a.and_then(|id| if id > 0 { Some(id as u32) } else { None })))
+        }).map_err(|e| e.to_string())?;
+
+        for r in rows.filter_map(|r| r.ok()) {
+            targets_map.entry(r.0).or_insert(r.1);
+        }
+        drop(stmt);
+
+        let total_targets = targets_map.len();
+        if total_targets == 0 {
+            is_running_flag.store(false, Ordering::SeqCst);
+            return Ok(0);
+        }
+
+        // 2. 清空非手工锁定的旧缓存，确保利用最新的 DLC 穿透与主游戏映射规则完全刷新
+        let _ = conn.execute("DELETE FROM steam_db.steam_cache WHERE is_manual IS NULL OR is_manual = 0", []);
+
+        let targets: Vec<crate::steam_service::SteamSyncTarget> = targets_map
+            .into_iter()
+            .map(|(name, appid)| crate::steam_service::SteamSyncTarget::with_appid(name, appid))
+            .collect();
+
+        // 3. 启动多线程 Steam 同步引擎
+        let count = match crate::steam_service::sync_steam_metadata_blocking(
+            app.clone(),
+            targets,
+            crate::steam_service::ProgressReporter::SteamSyncProgress {
+                event_name: "steam-resync-progress".to_string(),
+            },
+            cancel_flag.clone(),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                is_running_flag.store(false, Ordering::SeqCst);
+                let _ = app.emit("steam-resync-progress", serde_json::json!({
+                    "is_running": false,
+                    "current": 0,
+                    "total": total_targets,
+                    "message": format!("同步中断: {}", e),
+                    "status": "error",
+                }));
+                return Err(e);
+            }
+        };
+
+        // 4. 同步封面与海报
+        let _ = crate::db::sync_game_metadata_covers(&conn);
+
+        is_running_flag.store(false, Ordering::SeqCst);
+
+        let _ = app.emit("steam-resync-progress", serde_json::json!({
+            "is_running": false,
+            "current": total_targets,
+            "total": total_targets,
+            "message": format!("Steam 元数据全量更新完成！成功抓取并更新 {} 款游戏数据", count),
+            "status": "completed",
+        }));
+
+        let _ = app.emit("games-updated", ());
+
+        Ok(count)
+    }).await.map_err(|e| e.to_string())?;
+
+    let count = res?;
+    Ok(format!("Steam 元数据全量更新完成！成功抓取并更新 {} 款游戏数据", count))
+}
+
+#[tauri::command]
+fn recalculate_games_command(app_handle: tauri::AppHandle, state: tauri::State<'_, db::DbState>) -> Result<String, String> {
+    use tauri::Emitter;
     let conn = state.0.lock().map_err(|e| e.to_string())?;
     let (total, base_changed, purged_cache) = db::recalculate_existing_games(&conn).map_err(|e| e.to_string())?;
-    Ok(format!("重新计算完成：更新 {} 个游戏，修正 {} 个游戏名称，清理 {} 个错误缓存", total, base_changed, purged_cache))
+    let _ = db::sync_game_metadata_covers(&conn);
+    let _ = app_handle.emit("games-updated", ());
+    Ok(format!("本地数据重新计算完成：更新 {} 个游戏，修正 {} 个游戏名称，清理 {} 个错误匹配缓存。若需重新从 Steam 抓取最新评分与封面，请使用上方的【清空缓存并重新获取】。", total, base_changed, purged_cache))
 }
 
 #[tauri::command]
@@ -1271,6 +1387,10 @@ pub fn run() {
             let dc_is_running = Arc::clone(&dc_state.is_running);
             let dc_cancel = Arc::clone(&dc_state.cancel_flag);
             app.manage(dc_state);
+            app.manage(SteamResyncState {
+                is_running: Arc::new(AtomicBool::new(false)),
+                cancel_flag: Arc::new(AtomicBool::new(false)),
+            });
 
             // 异步后台校准历史记录中的 base_name（使用事务批量处理，耗时仅几毫秒，完全不阻塞应用启动主线程）
             std::thread::spawn(|| {
@@ -1428,7 +1548,9 @@ pub fn run() {
             data_correction::trigger_data_correction_command,
             data_correction::cancel_data_correction_command,
             data_correction::get_data_correction_status_command,
-            recalculate_games_command
+            recalculate_games_command,
+            resync_all_steam_metadata_command,
+            cancel_steam_resync_command
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时出错");

@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Database, HardDrive, Layers, Play } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import TabNav, { type TabDef } from "../components/TabNav";
 import PosterWall from "../components/PosterWall";
@@ -48,14 +49,27 @@ export default function LocalGamesPage() {
     loadGames, loadDuplicates, loadFranchises
   } = useGames({ searchVal, driveVal, typeVal, ratingVal, sortVal });
 
-  const reloadData = () => {
+  const reloadData = useCallback(() => {
     if (activeTab === "all") loadGames(false, false, true);
     else if (activeTab === "installed") loadGames(true, true, false);
     else if (activeTab === "duplicates") loadDuplicates();
     else if (activeTab === "franchise") loadFranchises();
-  };
+  }, [activeTab, loadGames, loadDuplicates, loadFranchises]);
 
   const { isScanning, startScan } = useScan({ onComplete: reloadData });
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen("games-updated", () => {
+      reloadData();
+    }).then(fn => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [reloadData]);
 
   // Reset page when filters or tab change
   useEffect(() => {

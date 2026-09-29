@@ -952,6 +952,9 @@ pub enum ProgressReporter {
     ScrapeProgress {
         event_name: String,
     },
+    SteamSyncProgress {
+        event_name: String,
+    },
 }
 
 impl ProgressReporter {
@@ -975,6 +978,18 @@ impl ProgressReporter {
                     serde_json::json!({
                         "current_page": current as u32,
                         "total_pages": total as u32,
+                        "message": message,
+                        "status": status,
+                    }),
+                );
+            }
+            ProgressReporter::SteamSyncProgress { event_name } => {
+                let _ = app_handle.emit(
+                    event_name,
+                    serde_json::json!({
+                        "is_running": true,
+                        "current": current,
+                        "total": total,
                         "message": message,
                         "status": status,
                     }),
