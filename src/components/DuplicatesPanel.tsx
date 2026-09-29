@@ -10,6 +10,7 @@ import {
   CheckCircle2
 } from "lucide-react";
 import { useGameContextMenu } from "../hooks/useGameContextMenu";
+import { useAppStore } from "../stores/useAppStore";
 import GameCard from "./GameCard";
 import type { DuplicateGroup, Game } from "../types";
 
@@ -39,6 +40,7 @@ function DuplicateGroupItem({
   onContextMenu,
 }: Omit<DuplicateGroupItemProps, "type">) {
   const { t } = useTranslation();
+  const { showToast } = useAppStore();
   // 默认使用首个游戏，支持鼠标移到某一行记录时动态预览对应条目
   const [activeGame, setActiveGame] = useState<Game>(group.games[0]);
 
@@ -51,7 +53,6 @@ function DuplicateGroupItem({
             game={activeGame || group.games[0]}
             onOpenFolder={openGameFolder}
             onContextMenu={onContextMenu}
-            hideTypeTag={true}
             hideLocation={true}
           />
         </div>
@@ -72,10 +73,29 @@ function DuplicateGroupItem({
               >
                 {/* 1. 顶栏：标题与操作 */}
                 <div className="conflict-path-header">
-                  <div className="conflict-path-title-group">
+                  <div className="conflict-path-title-group" style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
                     <span className="conflict-path-name" title={game.original_name}>
                       {game.original_name}
                     </span>
+                    <button
+                      type="button"
+                      className="card-copy-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const copyText = game.name || game.original_name;
+                        navigator.clipboard.writeText(copyText).then(() => {
+                          showToast(t("toastGameNameCopied", { name: copyText }) || `已复制游戏名称: ${copyText}`);
+                        }).catch(err => {
+                          console.error("Failed to copy text: ", err);
+                          showToast(t("toastGameNameCopyFailed") || "复制游戏名称失败");
+                        });
+                      }}
+                      title={t("copyGameName") || "复制游戏名称"}
+                      style={{ width: "20px", height: "18px" }}
+                      aria-label={t("copyGameName") || "复制游戏名称"}
+                    >
+                      <Copy size={11} />
+                    </button>
                   </div>
 
                   <div className="conflict-path-actions">

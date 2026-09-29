@@ -1,5 +1,7 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ExternalLink, Gamepad2 } from "lucide-react";
+import { ExternalLink, Gamepad2, Copy, Check } from "lucide-react";
+import { useAppStore } from "../stores/useAppStore";
 import type { Game } from "../types";
 import { 
   getRatingColorClass, 
@@ -21,8 +23,25 @@ interface GameDetailRowProps {
 
 export default function GameDetailRow({ game, onCopyPath, onOpenFolder, onContextMenu }: GameDetailRowProps) {
   const { t } = useTranslation();
+  const { showToast } = useAppStore();
+  const [copied, setCopied] = useState(false);
 
+  const title = game.name || game.original_name;
   const cover = getCoverUrl(game.local_cover);
+
+  const handleCopyTitle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!title) return;
+    navigator.clipboard.writeText(title).then(() => {
+      setCopied(true);
+      showToast(t("toastGameNameCopied", { name: title }) || `已复制游戏名称: ${title}`);
+      setTimeout(() => setCopied(false), 1500);
+    }).catch((err) => {
+      console.error("Failed to copy game title:", err);
+      showToast(t("toastGameNameCopyFailed") || "复制游戏名称失败");
+    });
+  };
 
   return (
     <div 
@@ -43,7 +62,18 @@ export default function GameDetailRow({ game, onCopyPath, onOpenFolder, onContex
       </div>
       <div className="detail-content">
         <div className="detail-header-line">
-          <div className="detail-game-title" title={game.name || game.original_name}>{game.name || game.original_name}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", minWidth: 0 }}>
+            <div className="detail-game-title" title={title}>{title}</div>
+            <button
+              type="button"
+              className={`card-copy-btn ${copied ? "copied" : ""}`}
+              onClick={handleCopyTitle}
+              title={copied ? (t("toastGameNameCopied", { name: title }) || "已复制") : (t("copyGameName") || "复制游戏名称")}
+              aria-label={t("copyGameName") || "复制游戏名称"}
+            >
+              {copied ? <Check size={12} /> : <Copy size={12} />}
+            </button>
+          </div>
         </div>
         <div className="detail-path-line">
           <span className={`badge ${getTypeBadgeClass(game.type)}`}>{getTypeLabel(game.type, t)}</span>
